@@ -49,6 +49,28 @@ hook is installed, and the measured p95 of its own answer time.
 Env wins, then `~/.config/caveman-router/config.json` (written by
 `caveman-router-hook login`), then the default.
 
+## Use it from any OpenAI SDK
+
+You do not need this package to use the router from an application. Point
+any OpenAI-compatible SDK at it and ask for `model: "auto"`; the router picks
+a model from your pool and forwards the request to OpenRouter or the upstream
+the operator configured. Works for GPT, Claude, Gemini, DeepSeek, Grok,
+Mistral, Qwen and anything else OpenRouter serves.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="https://router.caveman.so/v1", api_key="crk_...")
+r = client.chat.completions.create(
+    model="auto:openai/gpt-5.6,anthropic/claude-sonnet-4.5,google/gemini-3.7-flash",
+    messages=[{"role": "user", "content": "…"}],
+    extra_headers={"x-upstream-key": "sk-or-..."},   # your own OpenRouter key
+)
+print(r.model)
+```
+
+The Claude Code hook below is different: Claude Code only runs Claude models,
+so there the router chooses among Opus, Sonnet and Haiku for each subagent.
+
 ## What gets sent, and what is kept
 
 On every subagent spawn the hook sends the router:
