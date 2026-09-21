@@ -1,0 +1,39 @@
+{
+  "name": "@caveman-ai/router-client",
+  "version": "0.1.0",
+  "description": "Client for the Caveman Router decision API (/v1/route, /v1/route/task, /v1/route/delegate).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caveman-ai/router-client.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://github.com/caveman-ai/router-client#readme",
+  "bugs": {
+    "url": "https://github.com/caveman-ai/router-client/issues"
+  },
+  "author": "Caveman"
+}

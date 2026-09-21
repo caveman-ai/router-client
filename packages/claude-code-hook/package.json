@@ -1,0 +1,45 @@
+{
+  "name": "@caveman-ai/router-claude-code",
+  "version": "0.1.0",
+  "description": "Caveman Router subagent hook for Claude Code: routes Agent/Task spawns to the cheapest model that can do the job.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "caveman-router-hook": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@caveman-ai/router-client": "workspace:^"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caveman-ai/router-client.git",
+    "directory": "packages/claude-code-hook"
+  },
+  "homepage": "https://github.com/caveman-ai/router-client#readme",
+  "bugs": {
+    "url": "https://github.com/caveman-ai/router-client/issues"
+  },
+  "author": "Caveman"
+}
