@@ -1,6 +1,6 @@
 # @caveman-ai/router-claude-code
 
-## Claude Code on any model
+## Claude Code on your Claude subscription
 
 ```bash
 npm i -g @caveman-ai/router-claude-code
@@ -8,10 +8,17 @@ caveman-router-hook login --url https://router.caveman.so --key crk_...
 caveman-router-hook setup claude-code --statusline
 ```
 
-Every request Claude Code makes now goes through the Caveman Router. `model`
-is set to `auto`, so the router picks a model per turn — DeepSeek, Gemini,
-Claude, whatever wins on the task and the cost model — and records the
-decision. `caveman-router-hook model <name>` switches to a fixed model
+This keeps your claude.ai login. Setup writes `env.ANTHROPIC_BASE_URL` and
+`env.ANTHROPIC_CUSTOM_HEADERS` (`x-cave-api-key: <your router key>`) and never
+touches `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`, so Claude Code still
+sends its OAuth bearer and Anthropic still bills your Pro/Max plan. The router
+authenticates you on the header and forwards that bearer untouched for Claude
+turns — it never stores the login token.
+
+With a subscription, `auto` picks among Claude models by default: those turns
+cost you nothing beyond the plan you already pay for. Only non-Claude models —
+and only if you put them in your pool — cost money, through your own upstream
+key. `caveman-router-hook model <name>` switches to a fixed model
 (`google/gemini-3.7-flash`, `openrouter/deepseek/deepseek-v4-pro-0813`,
 `anthropic/claude-sonnet-4.5`) or a shortlist (`auto:<a>,<b>`). The statusline
 shows which model actually answered:
@@ -20,21 +27,32 @@ shows which model actually answered:
 auto → deepseek-v4-pro-0813 · code:repo_scan · 14 turns · $0.31
 ```
 
-`setup claude-code` merges exactly `env.ANTHROPIC_BASE_URL`,
-`env.ANTHROPIC_AUTH_TOKEN`, `model`, and — with `--statusline`, and only if you
-do not already have one — `statusLine`, into `~/.claude/settings.json`
-(`--project` for `.claude/settings.json`). It also installs the spawn hooks so
-subagents route too. Every other key is left byte for byte.
-`teardown claude-code` removes exactly those. Restart Claude Code after either.
+If `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` is already set (in settings or
+your shell), Claude Code uses it instead of the login and connectors stop
+working; setup prints a warning naming it. Remove it to go back to the
+subscription.
+
+**Teams on API billing:** `setup claude-code --api-key` writes
+`env.ANTHROPIC_AUTH_TOKEN` = your router key and no custom header. That bills
+per token against the key and disables claude.ai connectors.
+
+`setup claude-code` merges only its own keys (`env.ANTHROPIC_BASE_URL`, one of
+`env.ANTHROPIC_CUSTOM_HEADERS` / `env.ANTHROPIC_AUTH_TOKEN`, `model`, and —
+with `--statusline`, and only if you do not already have one — `statusLine`)
+into `~/.claude/settings.json` (`--project` for `.claude/settings.json`). An
+existing custom header of yours is kept; ours is appended on its own line and
+never duplicated. It also installs the spawn hooks so subagents route too.
+`teardown claude-code` removes exactly those, including only our header line.
+Restart Claude Code after either. `caveman-router-hook status` prints the mode.
 
 Same idea as [claude-code-router](https://github.com/musistudio/claude-code-router):
 point Claude Code at an Anthropic-compatible endpoint and serve it from any
 provider. The difference is who decides — routing here comes from the router's
-classifier and cost model per turn, not static rules you maintain. Your
-prompts go to the router either way: the
-[data notice](../../README.md) applies, and now to every turn rather than only
-to subagent spawns. `caveman-router-hook off` only stops the spawn hook — to
-stop sending turns, run `teardown claude-code`.
+classifier and cost model per turn, not static rules you maintain — and that
+your subscription keeps paying for the Claude turns. Your prompts go to the
+router either way: the [data notice](../../README.md) applies, and now to every
+turn rather than only to subagent spawns. `caveman-router-hook off` only stops
+the spawn hook — to stop sending turns, run `teardown claude-code`.
 
 **Caveat.** Claude Code's own `/model` picker only lists Anthropic names. A
 non-Anthropic model goes in through `caveman-router-hook model <name>` or the
@@ -61,8 +79,8 @@ caveman-router-hook install
 | `uninstall [--project]` | Removes them, leaving every other hook alone. |
 | `login --url <url> --key <key>` | Writes `~/.config/caveman-router/config.json` (mode 0600). |
 | `on` / `off` | Persistent routing switch. |
-| `status` | URL, key presence, installed or not, measured p95 answer time. |
-| `setup claude-code [--url U] [--key K] [--model M] [--statusline] [--project]` | Points Claude Code itself at the router (see above) and installs the spawn hooks. |
+| `status` | URL, key presence, installed or not, Claude Code mode (`subscription` / `api-key` / `not set up`), measured p95 answer time. |
+| `setup claude-code [--url U] [--key K] [--model M] [--api-key] [--statusline] [--project]` | Points Claude Code itself at the router, keeping your Claude subscription (see above); `--api-key` bills the router key instead. Installs the spawn hooks. |
 | `teardown claude-code [--project]` | Removes exactly what `setup` wrote. |
 | `model [NAME]` | Sets `settings.model`; with no NAME prints the configured one. |
 | `statusline` | The statusLine command; Claude Code pipes the render JSON on stdin. |

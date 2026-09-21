@@ -68,8 +68,10 @@ r = client.chat.completions.create(
 print(r.model)
 ```
 
-The Claude Code hook below is different: Claude Code only runs Claude models,
-so there the router chooses among Opus, Sonnet and Haiku for each subagent.
+The Claude Code hook is different: with `setup claude-code` it keeps your
+claude.ai login, so Claude turns stay on your Pro/Max subscription and the
+router chooses among Claude models unless you put others in your pool. See
+[the hook README](packages/claude-code-hook/README.md).
 
 ## What gets sent, and what is kept
 

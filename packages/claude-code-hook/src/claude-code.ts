@@ -27,19 +27,42 @@ function ourStatusLine(value: unknown): boolean {
   return typeof command === "string" && command.trim() === STATUSLINE_COMMAND;
 }
 
-export type SetupOptions = { url: string; key: string; model: string; statusline: boolean };
-export type SetupResult = { changed: string[]; statuslineTaken: boolean };
+export const HEADER_NAME = "x-cave-api-key";
 
-/** Merges exactly four keys and leaves every other one byte for byte. */
+/** Claude Code's `ANTHROPIC_CUSTOM_HEADERS` is newline-separated `Name: value`
+ * lines. Ours is one line; anyone else's lines survive untouched. */
+function withoutOurHeader(value: unknown): string[] {
+  return String(typeof value === "string" ? value : "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.toLowerCase().startsWith(`${HEADER_NAME}:`));
+}
+
+export type SetupOptions = { url: string; key: string; model: string; statusline: boolean; apiKey: boolean };
+export type SetupResult = { changed: string[]; statuslineTaken: boolean; conflict?: string };
+
+/** Subscription mode (default) never touches ANTHROPIC_AUTH_TOKEN, so Claude
+ * Code keeps using the claude.ai login and Anthropic bills the subscription;
+ * the router key rides a custom header instead. `--api-key` is the old way. */
 export function setupClaudeCode(path: string, options: SetupOptions): SetupResult | undefined {
   const root = readSettings(path);
   if (!root) return undefined;
   const changed: string[] = [];
   const next = env(root);
   if (next.ANTHROPIC_BASE_URL !== options.url) changed.push("env.ANTHROPIC_BASE_URL");
-  if (next.ANTHROPIC_AUTH_TOKEN !== options.key) changed.push("env.ANTHROPIC_AUTH_TOKEN");
   next.ANTHROPIC_BASE_URL = options.url;
-  next.ANTHROPIC_AUTH_TOKEN = options.key;
+
+  let conflict: string | undefined;
+  if (options.apiKey) {
+    if (next.ANTHROPIC_AUTH_TOKEN !== options.key) changed.push("env.ANTHROPIC_AUTH_TOKEN");
+    next.ANTHROPIC_AUTH_TOKEN = options.key;
+  } else {
+    const headers = [...withoutOurHeader(next.ANTHROPIC_CUSTOM_HEADERS), `${HEADER_NAME}: ${options.key}`].join("\n");
+    if (next.ANTHROPIC_CUSTOM_HEADERS !== headers) changed.push("env.ANTHROPIC_CUSTOM_HEADERS");
+    next.ANTHROPIC_CUSTOM_HEADERS = headers;
+    conflict = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+      .find((name) => (typeof next[name] === "string" && next[name]) || process.env[name]);
+  }
   root.env = next;
   if (root.model !== options.model) changed.push("model");
   root.model = options.model;
@@ -57,18 +80,27 @@ export function setupClaudeCode(path: string, options: SetupOptions): SetupResul
   writeSettings(path, root);
   // The spawn hooks route subagents too, and installHooks is idempotent.
   installHooks(path);
-  return { changed, statuslineTaken };
+  return { changed, statuslineTaken, conflict };
 }
 
-/** Removes exactly what setup writes — a model somebody else chose (`opus`)
- * and a statusLine somebody else wrote are left alone. */
+/** Removes exactly what either mode writes — a model somebody else chose
+ * (`opus`), a statusLine and a foreign custom header are left alone. */
 export function teardownClaudeCode(path: string): string[] | undefined {
   const root = readSettings(path);
   if (!root) return undefined;
   const removed: string[] = [];
   const next = env(root);
-  for (const key of ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]) {
-    if (key in next) { delete next[key]; removed.push(`env.${key}`); }
+  if ("ANTHROPIC_BASE_URL" in next) { delete next.ANTHROPIC_BASE_URL; removed.push("env.ANTHROPIC_BASE_URL"); }
+  // Only a router key (crk_…) is ours to remove; a user's own Anthropic token
+  // that setup merely warned about stays.
+  if (typeof next.ANTHROPIC_AUTH_TOKEN === "string" && next.ANTHROPIC_AUTH_TOKEN.startsWith("crk_")) {
+    delete next.ANTHROPIC_AUTH_TOKEN; removed.push("env.ANTHROPIC_AUTH_TOKEN");
+  }
+  if ("ANTHROPIC_CUSTOM_HEADERS" in next) {
+    const kept = withoutOurHeader(next.ANTHROPIC_CUSTOM_HEADERS);
+    if (kept.join("\n") !== next.ANTHROPIC_CUSTOM_HEADERS) removed.push("env.ANTHROPIC_CUSTOM_HEADERS");
+    if (kept.length === 0) delete next.ANTHROPIC_CUSTOM_HEADERS;
+    else next.ANTHROPIC_CUSTOM_HEADERS = kept.join("\n");
   }
   if (Object.keys(next).length === 0) delete root.env;
   else root.env = next;
@@ -77,6 +109,16 @@ export function teardownClaudeCode(path: string): string[] | undefined {
   writeSettings(path, root);
   if (uninstallHooks(path)) removed.push("hooks");
   return removed;
+}
+
+/** What `status` reports, read back out of settings.json. */
+export function setupMode(path: string): "subscription" | "api-key" | "not set up" {
+  const root = readSettings(path);
+  const next = root ? env(root) : {};
+  if (typeof next.ANTHROPIC_BASE_URL !== "string" || !next.ANTHROPIC_BASE_URL) return "not set up";
+  const headers = String(typeof next.ANTHROPIC_CUSTOM_HEADERS === "string" ? next.ANTHROPIC_CUSTOM_HEADERS : "");
+  if (headers.split("\n").some((line) => line.trim().toLowerCase().startsWith(`${HEADER_NAME}:`))) return "subscription";
+  return typeof next.ANTHROPIC_AUTH_TOKEN === "string" && next.ANTHROPIC_AUTH_TOKEN ? "api-key" : "subscription";
 }
 
 /** `model <name>` edits the same settings file setup wrote. */

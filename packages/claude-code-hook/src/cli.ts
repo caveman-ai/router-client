@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { configPath, latencyP95, routerKey, routerOn, routerURL, writeConfig } from "./config.js";
 import { hooksInstalled, installHooks, settingsPath, uninstallHooks } from "./install.js";
-import { DEFAULT_MODEL, STATUSLINE_COMMAND, configuredModel, setModel, setupClaudeCode, statuslineHook, teardownClaudeCode, validModel } from "./claude-code.js";
+import { DEFAULT_MODEL, HEADER_NAME, STATUSLINE_COMMAND, configuredModel, setModel, setupClaudeCode, setupMode, statuslineHook, teardownClaudeCode, validModel } from "./claude-code.js";
 import { spawnHook } from "./index.js";
 
 // No subcommand means Claude Code invoked us as the hook itself: the hook is
@@ -59,7 +59,7 @@ switch (sub) {
   }
   case "setup": {
     if (rest[0] !== "claude-code") {
-      console.error("usage: caveman-router-hook setup claude-code [--url <url>] [--key <key>] [--model <model>] [--statusline] [--project]");
+      console.error("usage: caveman-router-hook setup claude-code [--url <url>] [--key <key>] [--model <model>] [--api-key] [--statusline] [--project]");
       process.exitCode = 1;
       break;
     }
@@ -75,7 +75,8 @@ switch (sub) {
     // router without a second login.
     if (flag("url") || flag("key")) writeConfig({ ...(flag("url") ? { url } : {}), ...(flag("key") ? { key } : {}) });
     const path = settingsPath(project);
-    const result = setupClaudeCode(path, { url, key, model, statusline: rest.includes("--statusline") });
+    const apiKey = rest.includes("--api-key");
+    const result = setupClaudeCode(path, { url, key, model, statusline: rest.includes("--statusline"), apiKey });
     if (!result) {
       console.error(`cannot update ${path}; not modifying it`);
       process.exitCode = 1;
@@ -83,7 +84,9 @@ switch (sub) {
     }
     console.log(`updated ${path}`);
     console.log(`  env.ANTHROPIC_BASE_URL   ${url}`);
-    console.log(`  env.ANTHROPIC_AUTH_TOKEN ${key ? "set" : "empty (caveman-router-hook login --key <key>)"}`);
+    const keyState = key ? "set" : "empty (caveman-router-hook login --key <key>)";
+    if (apiKey) console.log(`  env.ANTHROPIC_AUTH_TOKEN ${keyState}`);
+    else console.log(`  env.ANTHROPIC_CUSTOM_HEADERS ${HEADER_NAME}: ${keyState}`);
     console.log(`  model                    ${model}`);
     if (result.statuslineTaken) {
       console.log("  statusLine               kept yours; chain ours into it:");
@@ -92,6 +95,10 @@ switch (sub) {
       console.log(`  statusLine               ${STATUSLINE_COMMAND}`);
     }
     console.log("  hooks                    PreToolUse(Agent|Task), SubagentStop");
+    console.log(apiKey ? "  billing: API key via the router" : "  billing: your Claude subscription (claude.ai login)");
+    if (result.conflict) {
+      console.log(`  warning: ${result.conflict} is set and takes precedence over your claude.ai login; remove it to bill the subscription`);
+    }
     console.log(result.changed.length ? "restart Claude Code" : "already set up; restart Claude Code if it is running");
     break;
   }
@@ -150,6 +157,7 @@ switch (sub) {
     console.log(`url         ${routerURL()}`);
     console.log(`key         ${routerKey() ? "set" : "missing (ROUTER_API_KEY or caveman-router-hook login --key)"}`);
     console.log(`hook        ${hooksInstalled(settingsPath(project)) ? "installed" : "not installed"} (${settingsPath(project)})`);
+    console.log(`claude code ${setupMode(settingsPath(project))}`);
     console.log(`answers     ${p95 === undefined ? "none measured yet" : `${(p95 / 1000).toFixed(1)} s (p95, last 20)`}`);
     break;
   }

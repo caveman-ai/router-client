@@ -42,18 +42,21 @@ async function fakeRouter(handler) {
   return { url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
 }
 
-test("setup writes exactly the four keys, is idempotent, and leaves others alone", async () => {
+test("setup defaults to subscription mode: base url + our custom header, no auth token", async () => {
   const home = box();
   writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({
     permissions: { allow: ["Bash"] },
-    env: { FOO: "bar" },
+    env: { FOO: "bar", ANTHROPIC_CUSTOM_HEADERS: "X-Mine: 1" },
   }, null, 2));
 
   const first = await cli(home, ["setup", "claude-code", "--url", "http://r.test", "--key", "crk_x", "--statusline"]);
+  assert.match(first.stdout, /billing: your Claude subscription \(claude\.ai login\)/);
   assert.match(first.stdout, /restart Claude Code/);
   const after = settingsOf(home);
   assert.equal(after.env.ANTHROPIC_BASE_URL, "http://r.test");
-  assert.equal(after.env.ANTHROPIC_AUTH_TOKEN, "crk_x");
+  assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, "X-Mine: 1\nx-cave-api-key: crk_x", "ours appended, theirs kept");
+  assert.equal(after.env.ANTHROPIC_AUTH_TOKEN, undefined, "the claude.ai login is left alone");
+  assert.equal(after.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(after.env.FOO, "bar", "an unrelated env var survives");
   assert.equal(after.model, "auto");
   assert.deepEqual(after.statusLine, { type: "command", command: "caveman-router-hook statusline" });
@@ -61,7 +64,41 @@ test("setup writes exactly the four keys, is idempotent, and leaves others alone
   assert.ok(after.hooks.PreToolUse.length === 1 && after.hooks.SubagentStop.length === 1, "spawn hooks installed too");
 
   await cli(home, ["setup", "claude-code", "--url", "http://r.test", "--key", "crk_x", "--statusline"]);
-  assert.deepEqual(settingsOf(home), after, "second setup changes nothing");
+  assert.deepEqual(settingsOf(home), after, "second setup changes nothing, header not duplicated");
+
+  const status = await cli(home, ["status"], { env: { ROUTER_URL: "http://r.test", ROUTER_API_KEY: "crk_x" } });
+  assert.match(status.stdout, /claude code subscription/);
+});
+
+test("--api-key writes the auth token and no custom header", async () => {
+  const home = box();
+  writeFileSync(join(home, ".claude", "settings.json"), "{}");
+  const out = await cli(home, ["setup", "claude-code", "--url", "http://r.test", "--key", "crk_x", "--api-key"]);
+  assert.match(out.stdout, /billing: API key via the router/);
+  const after = settingsOf(home);
+  assert.equal(after.env.ANTHROPIC_BASE_URL, "http://r.test");
+  assert.equal(after.env.ANTHROPIC_AUTH_TOKEN, "crk_x");
+  assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, undefined);
+  assert.match((await cli(home, ["status"])).stdout, /claude code api-key/);
+});
+
+test("subscription setup warns about an ANTHROPIC key that takes precedence", async () => {
+  const settings = await cli(box(), ["setup", "claude-code", "--key", "crk_x"], { env: { ANTHROPIC_API_KEY: "sk-ant-1" } });
+  assert.match(settings.stdout, /warning: ANTHROPIC_API_KEY is set and takes precedence/);
+
+  const home = box();
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "sk-ant-2" } }));
+  const out = await cli(home, ["setup", "claude-code", "--key", "crk_x"]);
+  assert.match(out.stdout, /warning: ANTHROPIC_AUTH_TOKEN is set and takes precedence/);
+
+  const clean = await cli(box(), ["setup", "claude-code", "--key", "crk_x"]);
+  assert.doesNotMatch(clean.stdout, /warning:/);
+});
+
+test("status says not set up before setup", async () => {
+  const home = box();
+  writeFileSync(join(home, ".claude", "settings.json"), "{}");
+  assert.match((await cli(home, ["status"])).stdout, /claude code not set up/);
 });
 
 test("setup never overwrites somebody else's statusLine", async () => {
@@ -82,17 +119,34 @@ test("setup refuses a settings file that is not an object", async () => {
   assert.equal(readFileSync(join(home, ".claude", "settings.json"), "utf8"), "[1,2,3]");
 });
 
-test("teardown removes exactly what setup wrote", async () => {
+test("teardown removes exactly what subscription setup wrote, keeping a foreign header", async () => {
   const home = box();
-  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ env: { FOO: "bar" }, permissions: {} }));
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({
+    env: { FOO: "bar", ANTHROPIC_CUSTOM_HEADERS: "X-Mine: 1" }, permissions: {},
+  }));
   await cli(home, ["setup", "claude-code", "--url", "http://r.test", "--key", "crk_x", "--statusline"]);
   await cli(home, ["teardown", "claude-code"]);
   const after = settingsOf(home);
-  assert.deepEqual(after.env, { FOO: "bar" });
+  assert.deepEqual(after.env, { FOO: "bar", ANTHROPIC_CUSTOM_HEADERS: "X-Mine: 1" });
   assert.equal(after.model, undefined);
   assert.equal(after.statusLine, undefined);
   assert.equal(after.hooks, undefined, "an emptied hooks map is removed, not left as {}");
   assert.deepEqual(after.permissions, {});
+  assert.match((await cli(home, ["status"])).stdout, /claude code not set up/);
+});
+
+test("teardown removes what --api-key setup wrote, and drops an emptied header key", async () => {
+  const home = box();
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ env: { FOO: "bar" } }));
+  await cli(home, ["setup", "claude-code", "--url", "http://r.test", "--key", "crk_x", "--api-key"]);
+  await cli(home, ["teardown", "claude-code"]);
+  assert.deepEqual(settingsOf(home).env, { FOO: "bar" });
+
+  const only = box();
+  writeFileSync(join(only, ".claude", "settings.json"), "{}");
+  await cli(only, ["setup", "claude-code", "--key", "crk_x"]);
+  await cli(only, ["teardown", "claude-code"]);
+  assert.equal(settingsOf(only).env, undefined, "no leftover empty ANTHROPIC_CUSTOM_HEADERS");
 });
 
 test("teardown leaves a model and a statusLine that are not ours", async () => {
@@ -189,4 +243,12 @@ test("statusline caches for 2 s and survives a router slower than 300 ms", async
   assert.ok(Date.now() - started < 1400, `gave up on the slow router (${Date.now() - started} ms)`);
   assert.equal(hits, 2);
   router.close();
+});
+
+test("teardown keeps a user's own Anthropic token", async () => {
+  const home = box();
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://r.test", ANTHROPIC_AUTH_TOKEN: "sk-ant-mine" } }));
+  await cli(home, ["teardown", "claude-code"]);
+  assert.equal(settingsOf(home).env.ANTHROPIC_AUTH_TOKEN, "sk-ant-mine");
+  assert.equal(settingsOf(home).env.ANTHROPIC_BASE_URL, undefined);
 });
