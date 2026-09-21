@@ -99,6 +99,7 @@ export type SessionSummary = {
   decisions?: number;
   last?: { model?: string; task?: string; tier?: string } | null;
   measured_usd?: number;
+  list_price_usd?: number;
   estimate_usd?: number;
 };
 
@@ -125,8 +126,10 @@ export function statusLine(head: string, summary: SessionSummary): string {
   const decisions = typeof summary.decisions === "number" ? summary.decisions : 0;
   if (decisions > 0) parts.push(`${decisions} turn${decisions === 1 ? "" : "s"}`);
   const measured = usd(summary.measured_usd);
+  const listPrice = usd(summary.list_price_usd);
   const estimate = usd(summary.estimate_usd);
   if (measured > 0) parts.push(`$${measured.toFixed(2)}`);
+  else if (listPrice > 0) parts.push(`list $${listPrice.toFixed(2)}`);
   else if (estimate > 0) parts.push(`est. $${estimate.toFixed(2)}`);
   return parts.join(" · ");
 }

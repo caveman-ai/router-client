@@ -142,7 +142,9 @@ test("statusline formats every branch and falls back without router config", asy
 
   assert.equal(await line(home), "auto → deepseek-v4-pro-0813 · code:repo_scan · 14 turns · $0.31");
 
-  body = { ...body, measured_usd: 0, estimate_usd: 0.12 };
+  body = { ...body, measured_usd: 0, list_price_usd: 0.08, estimate_usd: 0.12 };
+  assert.equal(await line(box()), "auto → deepseek-v4-pro-0813 · code:repo_scan · 14 turns · list $0.08");
+  body = { ...body, measured_usd: 0, list_price_usd: 0, estimate_usd: 0.12 };
   assert.equal(await line(box()), "auto → deepseek-v4-pro-0813 · code:repo_scan · 14 turns · est. $0.12");
 
   body = { ...body, estimate_usd: 0 };
