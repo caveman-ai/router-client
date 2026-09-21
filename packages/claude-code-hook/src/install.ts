@@ -16,7 +16,7 @@ export function settingsPath(project: boolean): string {
   return project ? join(process.cwd(), ".claude", "settings.json") : join(homedir(), ".claude", "settings.json");
 }
 
-function readSettings(path: string): Record<string, unknown> | undefined {
+export function readSettings(path: string): Record<string, unknown> | undefined {
   try {
     const text = readFileSync(path, "utf8").trim();
     if (!text) return {};
@@ -36,7 +36,7 @@ function isOurs(entry: unknown): boolean {
     && (h as { command: string }).command.includes(HOOK_COMMAND));
 }
 
-function write(path: string, root: Record<string, unknown>): void {
+export function writeSettings(path: string, root: Record<string, unknown>): void {
   mkdirSync(dirname(path), { recursive: true });
   // Atomic: a partial write here is somebody's whole settings.json — every
   // other hook, every permission — truncated by a full disk or a Ctrl-C.
@@ -61,7 +61,7 @@ export function installHooks(path: string): boolean {
     hooks[event] = list;
   }
   root.hooks = hooks;
-  write(path, root);
+  writeSettings(path, root);
   return true;
 }
 
@@ -79,7 +79,8 @@ export function uninstallHooks(path: string): boolean {
     if (kept.length === 0) delete hooks[event];
     else hooks[event] = kept;
   }
-  if (removed) write(path, root);
+  if (removed && Object.keys(hooks).length === 0) delete root.hooks;
+  if (removed) writeSettings(path, root);
   return removed;
 }
 
