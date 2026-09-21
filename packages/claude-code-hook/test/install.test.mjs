@@ -42,7 +42,7 @@ test("install is idempotent and uninstall removes only our entries", async () =>
   await cli(home, ["uninstall"]);
   const removed = JSON.parse(readFileSync(settings, "utf8"));
   assert.deepEqual(removed.hooks.PreToolUse, [{ matcher: "Bash", hooks: [{ type: "command", command: "other-tool" }] }]);
-  assert.deepEqual(removed.hooks.SubagentStop, []);
+  assert.equal(removed.hooks.SubagentStop, undefined, "an emptied event key is removed, not left as []");
 });
 
 test("login writes url and key, and status reads them back", async () => {
