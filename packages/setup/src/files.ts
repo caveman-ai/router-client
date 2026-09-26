@@ -167,8 +167,9 @@ function setPath(root: Json, path: string[], value: unknown): void {
 export const equal = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** Sets exactly `desired` (dotted keys; the parts must not contain dots) and
- * remembers each key's pre-setup value once. Keys an earlier run set that this
- * run does not want are put back. */
+ * remembers each key's pre-setup value: the first one seen, or the user's own
+ * if they changed the key since setup set it. Keys an earlier run set that
+ * this run does not want are put back. */
 export function applyKeys(root: Json, record: FileRecord, desired: Record<string, unknown>): void {
   record.set ??= {};
   record.prior ??= {};
@@ -179,7 +180,10 @@ export function applyKeys(root: Json, record: FileRecord, desired: Record<string
     delete record.prior[key];
   }
   for (const [key, value] of Object.entries(desired)) {
-    if (!(key in record.prior)) record.prior[key] = getPath(root, splitKey(key));
+    const current = getPath(root, splitKey(key));
+    // First touch, or the user changed it since setup: theirs is what
+    // teardown gives back.
+    if (!(key in record.prior) || !equal(current, record.set[key])) record.prior[key] = current;
     setPath(root, splitKey(key), value);
     record.set[key] = value;
   }
@@ -191,6 +195,15 @@ export function restoreKeys(root: Json, record: FileRecord): void {
   for (const [key, value] of Object.entries(record.set ?? {})) {
     if (equal(getPath(root, splitKey(key)), value)) setPath(root, splitKey(key), record.prior?.[key] ?? ABSENT);
   }
+}
+
+/** The value the user means for `key`: what they had before setup, or what
+ * they put there since. */
+export function userValue(root: Json, record: FileRecord, key: string): unknown {
+  const current = getPath(root, splitKey(key));
+  const changed = !!record.set && key in record.set && !equal(current, record.set[key]);
+  const value = !changed && record.prior && key in record.prior ? record.prior[key] : current;
+  return isAbsent(value) ? undefined : value;
 }
 
 export function currentValue(root: Json, key: string): unknown {

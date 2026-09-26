@@ -291,3 +291,32 @@ test("with the caveman-router plugin enabled, setup writes no hooks (they would 
     await daemon.close();
   }
 });
+
+test("a statusline or header the user changed after setup is what a re-run wraps and teardown restores", { timeout: 60_000 }, async () => {
+  const env = box();
+  seed(env);
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  const args = ["setup", "--yes", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"];
+  try {
+    assert.equal((await run(env, args)).code, 0);
+    const path = join(env.home, ".claude", "settings.json");
+    const settings = JSON.parse(readFileSync(path, "utf8"));
+    settings.statusLine = { type: "command", command: "my-new-bar" };
+    settings.env.ANTHROPIC_CUSTOM_HEADERS = "X-Team: red";
+    writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
+
+    assert.equal((await run(env, args)).code, 0);
+    const again = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(again.statusLine.command, `caveman-router statusline --prev ${Buffer.from("my-new-bar").toString("base64url")}`);
+    assert.equal(again.env.ANTHROPIC_CUSTOM_HEADERS, `X-Team: red\nx-caveman-local-token: ${TOKEN}\nx-cave-routing-mode: agent`);
+
+    assert.equal((await run(env, ["teardown", "--harness", "claude-code"])).code, 0);
+    const after = JSON.parse(readFileSync(path, "utf8"));
+    assert.deepEqual(after.statusLine, { type: "command", command: "my-new-bar" });
+    assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, "X-Team: red");
+    assert.equal(after.env.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(after.model, undefined);
+  } finally {
+    await daemon.close();
+  }
+});

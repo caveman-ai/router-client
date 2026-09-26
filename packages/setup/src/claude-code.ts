@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PoolModel } from "./routerd.js";
-import { applyKeys, currentValue, formatJson, parseJsonObject, readText, recordFor, restoreKeys, restoreManaged, writeManaged } from "./files.js";
+import { applyKeys, currentValue, formatJson, userValue, parseJsonObject, readText, recordFor, restoreKeys, restoreManaged, writeManaged } from "./files.js";
 import type { FileRecord, Json, SetupState } from "./files.js";
 
 // Claude Code: user settings only. Base URL at the daemon, the local token and
@@ -73,9 +73,7 @@ export function configureClaudeCode(state: SetupState, options: ClaudeOptions): 
 
   // Our header lines replace any line with the same header name; the prior
   // value is restored whole on teardown.
-  const priorHeaders = record.prior && "env.ANTHROPIC_CUSTOM_HEADERS" in record.prior
-    ? record.prior["env.ANTHROPIC_CUSTOM_HEADERS"] : currentValue(root, "env.ANTHROPIC_CUSTOM_HEADERS");
-  const lines = headerLines(priorHeaders).filter((line) => ![TOKEN_HEADER, MODE_HEADER].includes(headerName(line)));
+  const lines = headerLines(userValue(root, record, "env.ANTHROPIC_CUSTOM_HEADERS")).filter((line) => ![TOKEN_HEADER, MODE_HEADER].includes(headerName(line)));
   lines.push(`${TOKEN_HEADER}: ${options.token}`, `${MODE_HEADER}: ${options.mode}`);
 
   const desired: Record<string, unknown> = {
@@ -107,7 +105,7 @@ export function configureClaudeCode(state: SetupState, options: ClaudeOptions): 
   }
 
   // Statusline: wrap the user's own (the pre-setup one, not ours).
-  const priorStatus = record.prior && "statusLine" in record.prior ? record.prior.statusLine : currentValue(root, "statusLine");
+  const priorStatus = userValue(root, record, "statusLine");
   const previous = priorStatus && !ourStatusLine(priorStatus) ? (priorStatus as { command?: unknown }).command : undefined;
   const statusLine: Record<string, unknown> = {
     type: "command",
