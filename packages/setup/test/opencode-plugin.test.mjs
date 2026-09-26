@@ -4,6 +4,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { daemonReplies, fakeDaemon, tempHome } from "../../client/test/fake-daemon.mjs";
 
+// The socket path follows $CAVEMAN_HOME: a value from the developer's shell
+// must not point these tests at a real daemon.
+delete process.env.CAVEMAN_HOME;
+
 const PLUGIN = new URL("../assets/opencode-plugin.js", import.meta.url).href;
 
 async function plugin(home) {

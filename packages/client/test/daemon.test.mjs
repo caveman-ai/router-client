@@ -3,6 +3,10 @@ import test from "node:test";
 import { daemonHealthy, postEvent, postPrompt, spawnDecision } from "../dist/index.js";
 import { daemonReplies, fakeDaemon, tempHome } from "./fake-daemon.mjs";
 
+// The socket path follows $CAVEMAN_HOME: a value from the developer's shell
+// must not point these tests at a real daemon.
+delete process.env.CAVEMAN_HOME;
+
 function withHome(home) {
   const previous = process.env.HOME;
   process.env.HOME = home;

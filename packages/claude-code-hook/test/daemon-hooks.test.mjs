@@ -7,6 +7,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { daemonReplies, fakeDaemon, tempHome } from "../../client/test/fake-daemon.mjs";
 
+// The socket path follows $CAVEMAN_HOME: a value from the developer's shell
+// must not point these tests at a real daemon.
+delete process.env.CAVEMAN_HOME;
+
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const INDEX = new URL("../dist/index.js", import.meta.url).href;
 
