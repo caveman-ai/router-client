@@ -63,8 +63,8 @@ class GitTimeout extends Error {
   constructor(readonly bytes = 0) { super("git timed out"); }
 }
 
-// ls-tree -l lines run ~100 bytes, so this is past the router's 2000-file
-// `large` line; a timeout below it is load, not size.
+// ls-tree -l lines run ~100 bytes, so this is a few thousand files' worth of
+// output; a timeout below it is load, not size.
 const LARGE_TREE_BYTES = 128 * 1024;
 
 /** Kill git and everything it started. POSIX: the process group. Windows has
@@ -124,9 +124,9 @@ function cachePath(cwd: string): string {
 }
 
 // The profile cached for a walk that did not finish in the budget. A tree that
-// big is a large repository; caching it as large (the router buckets 2000+
-// files as `large`) saves every later spawn the timeout and keeps it out of the
-// permissive `unknown` bucket. It is a sentinel, not a count.
+// big is a large repository; caching it as one saves every later spawn the
+// timeout and reports it truthfully instead of as unknown. It is a sentinel,
+// not a count.
 export const TIMED_OUT_PROFILE: RepoProfile = { files: 1_000_000 };
 
 /** The profile for `cwd`, or undefined when it is not a git repository, git is
