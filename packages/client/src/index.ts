@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 
 export * from "./types.js";
+export * from "./daemon.js";
 
 export const DEFAULT_ROUTER_URL = "https://router.caveman.so";
 

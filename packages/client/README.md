@@ -58,3 +58,19 @@ for the parent, never applied by the router.
 
 The wire types (`RouteResponse`, `TaskResponse`, `DelegateResponse`, …) are
 exported from the package root and mirror the server structs field for field.
+
+## Local daemon (`caveman-routerd`)
+
+The same package talks to the local routing daemon over its control socket
+(`~/.caveman/routerd.sock`, HTTP over a unix socket; on Windows TCP
+`127.0.0.1:47822` with the local token). The harness adapters use it:
+
+| Function | Call |
+| --- | --- |
+| `daemonHealthy(timeoutMs = 500)` | `GET /health` |
+| `postPrompt(harness, sessionId, { prompt_id, cwd, ... })` | `POST /hook/prompt`, 50 ms cap |
+| `postEvent(harness, sessionId, kind, data)` | `POST /hook/event`, 50 ms cap |
+| `spawnDecision(harness, sessionId, { tool, tool_input, parent, cwd })` | `POST /hook/spawn`, 2 s cap |
+
+Each resolves to `undefined`/`false` on any failure (no socket, timeout, non-2xx,
+bad body) and never throws, so a hook can fail open without a `try`.

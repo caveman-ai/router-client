@@ -1,7 +1,7 @@
 {
   "name": "@caveman-ai/router-client",
   "version": "0.1.0",
-  "description": "Client for the Caveman Router decision API (/v1/route, /v1/route/task, /v1/route/delegate).",
+  "description": "Client for the Caveman Router decision API and the local caveman-routerd control socket.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
