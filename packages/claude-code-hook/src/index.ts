@@ -159,8 +159,8 @@ async function sessionRepo(text: string, cwd: unknown): Promise<RepoProfile | un
   return Object.keys(repo).length > 0 ? repo : undefined;
 }
 
-/** `ROUTER_AGENT_POOL=opus,sonnet` narrows the pool; unset, the router picks
- * its own Claude Code defaults. */
+/** `ROUTER_AGENT_POOL=opus,sonnet` narrows the families the router's child
+ * policy picks from; unset, it picks from haiku, sonnet and opus. */
 function agentPool(): string[] | undefined {
   const pool = (process.env.ROUTER_AGENT_POOL ?? "").split(",").map((name) => name.trim()).filter(Boolean);
   return pool.length > 0 ? pool : undefined;

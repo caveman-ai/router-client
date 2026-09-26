@@ -118,7 +118,8 @@ killed at the deadline), is cached per working directory and commit, and is
 dropped if git is missing or not a repository. A tree walk that does not finish
 in 300 ms is cached as a large repository (`files: 1000000`, a sentinel) for
 that commit. `models` is sent only when
-`ROUTER_AGENT_POOL` is set.
+`ROUTER_AGENT_POOL` is set; it narrows the child families (`opus,sonnet`), it
+does not switch the router's child policy off.
 
 When the router also advises a different model for the parent session, the line
 ends with `orchestrator: opus recommended`. It is advice: Claude Code cannot

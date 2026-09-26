@@ -44,7 +44,7 @@ hook is installed, and the measured p95 of its own answer time.
 | `ROUTER_OFF=1` | Route nothing for this session. |
 | `ROUTER_VETO=1` | Let the hook deny a spawn the router says is cheaper inline (at most once per session). Off by default: the hook rewrites, it does not block. |
 | `ROUTER_BUDGET_MS` | Lower the hook's 2500 ms wall-clock budget. |
-| `ROUTER_AGENT_POOL` | Comma-separated models the router may pick for a subagent (`opus,sonnet`). Unset, the router uses the newest Haiku, Sonnet and Opus. |
+| `ROUTER_AGENT_POOL` | Comma-separated Claude families the router may pick a subagent from (`opus,sonnet`). It narrows the newest Haiku, Sonnet and Opus by family name; the child policy stays on. A list naming none of them is ignored (the reply's reason is `agent_policy_default_pool`). Unset, all three. |
 | `CAVEMAN_ROUTER_HOME` | State directory. Default `~/.config/caveman-router`. |
 
 Env wins, then `~/.config/caveman-router/config.json` (written by
