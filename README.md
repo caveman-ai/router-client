@@ -1,17 +1,118 @@
-# Caveman Router — client and Claude Code hook
+# Caveman Router: client, harness adapters and setup
 
-The Caveman Router decides which model an agent should spend a request on. This
-repository is the open-source harness side of it: a TypeScript client for the
-router API, and a Claude Code hook that uses it to pick the model for every
-subagent you spawn.
+The Caveman Router decides which model an agent should spend a request on.
+This repository is the open-source harness side of it: the adapters that
+connect Claude Code, Codex and OpenCode to `caveman-routerd` (the local
+routing daemon), a one-command setup, a TypeScript client for the router API,
+and the original Claude Code subagent hook.
 
-The router itself is a hosted service (`https://router.caveman.so`). These
-packages only call it.
+- [`@caveman-ai/router-setup`](packages/setup): `caveman-router setup` / `teardown`, and the hook entry points.
+- [`@caveman-ai/router-client`](packages/client): the router API client and the `caveman-routerd` control-socket client.
+- [`@caveman-ai/router-claude-code`](packages/claude-code-hook): the Claude Code hook.
+- [`@caveman-ai/router-codex`](packages/codex-hook): the Codex hook.
+- [`packages/claude-code-plugin`](packages/claude-code-plugin): the Claude Code hooks as a plugin.
 
-- [`@caveman-ai/router-client`](packages/client) — the API client.
-- [`@caveman-ai/router-claude-code`](packages/claude-code-hook) — the Claude Code hook.
+## Use any model in Claude Code, Codex and OpenCode
 
-## 60-second install (Claude Code)
+`caveman-routerd` runs on your machine. Each harness sends its model traffic
+to it on `127.0.0.1:47821`, and it forwards every request straight to the
+provider with your own credentials. On each new ask it picks the model from a
+pool you choose, and hooks in the harness tell it what the proxy cannot see.
+Model traffic never goes through Caveman.
+
+```bash
+npm i -g @caveman-ai/router-setup
+caveman-router setup
+```
+
+Setup asks which harnesses to set up, how you reach Claude (your claude.ai
+subscription, an API key, or neither), whether you have OpenAI and OpenRouter
+keys, which models to route between (a preset, or ids such as
+`anthropic/claude-sonnet-5,openai/gpt-6-astra`) and the routing mode. Then it:
+
+1. checks that `caveman-routerd` is on your PATH (it ships separately; setup
+   never downloads binaries);
+2. stores each API key with `caveman-routerd keys set <provider>`, over stdin;
+3. writes the pool, the mode and the subscription switches with
+   `caveman-routerd config set`;
+4. runs `caveman-routerd install-service` (launchd or systemd) and waits for
+   the daemon to answer;
+5. configures each harness (below);
+6. prints what it changed and a one-line test command.
+
+For scripts: `caveman-router setup --yes --harness claude-code,codex,opencode|all
+--preset frontier|balanced|cheap` (or `--models <ids>`) `--claude
+subscription|key|none --openai key|none --openrouter key|none --mode
+agent|balanced|cost-efficient`. Keys then come from `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` and `OPENROUTER_API_KEY`. `--context-window <tokens>` sets
+the window Claude Code assumes for `auto` when the daemon cannot report one.
+Running setup again is safe: it changes only what differs.
+
+### What is stored where
+
+| Where | What |
+| --- | --- |
+| Your OS keychain (via `caveman-routerd`) | Provider API keys. Never in a harness file, never on a command line. |
+| `~/.caveman/` | The daemon's config, its local token and its socket; `router-setup.json` records what setup changed. |
+| `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_CUSTOM_HEADERS` (the local token and routing mode), `env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, `model: "auto"`, hooks, and a statusline wrapper that still runs your own statusline. With non-Claude models in the pool: one `/model` picker entry and `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS`. |
+| `~/.codex/caveman.config.toml` | A Codex profile of its own: the `caveman` provider, `model = "auto"` and the hooks. Use `codex --profile caveman`. Your `config.toml` is not edited. |
+| `~/.config/opencode/opencode.json`, `plugins/caveman-router.js` | The `caveman` provider and a plugin that tags requests with the session. Pick `caveman/auto`. |
+
+The local token is not a credential for any provider: it only lets a harness
+talk to the daemon on your machine.
+
+The hooks give the daemon the first 500 characters of each ask, subagent
+prompts, the statusline JSON and a repository profile (counts and language
+names, no paths). The daemon sends the hosted router what it needs to decide;
+with `zdr = true` in its config it sends only computed features, no text. Every file setup edits is backed up first
+as `<file>.caveman-backup-<time>`.
+
+### Subscriptions
+
+- **Claude subscription:** works in Claude Code, unmodified. The daemon passes
+  the login Claude Code sends straight through to Anthropic. Setup never
+  reads, copies or stores it. In Codex and OpenCode, Claude models need an
+  API key.
+- **ChatGPT subscription:** use it in Codex the normal way. Routing it
+  anywhere else is unclear under OpenAI's terms, so it stays off. Setup never
+  reads `~/.codex/auth.json`.
+- **API keys:** any model, in any harness.
+
+`--openai subscription` and `--claude-cli-adapter` only flip the daemon's
+`subscriptions.chatgpt` and `subscriptions.claude_cli_adapter` switches; the
+daemon does not act on either yet.
+
+### Undo
+
+```bash
+caveman-router teardown                # every harness, plus the service and the keys setup stored
+caveman-router teardown --harness codex
+```
+
+A file nobody touched since setup gets its original bytes back. A file you
+edited since keeps your edits and loses only setup's keys. Restart the
+harnesses afterwards.
+
+### When the daemon is down
+
+Hooks give up after 50 ms (500 ms for the session-start check, 2 s when
+choosing a subagent's model) and the harness carries on. But requests to `127.0.0.1:47821` fail until the
+daemon is back, so Claude Code shows "Caveman routing is off" at session start
+when it cannot reach it. `caveman-routerd install-service` restarts it;
+`caveman-router teardown` takes the harnesses off it.
+
+### Known limits
+
+- Codex needs a Codex CLI with profile files (`<name>.config.toml`; checked
+  with 0.156) and a `caveman-routerd` build that serves the Responses API.
+  Codex asks you to trust the new hooks on its next start.
+- OpenCode's per-turn model setting (`CAVEMAN_OPENCODE_SET_MODEL=1`) is
+  experimental: it is read from OpenCode's source and has not been run
+  against a live OpenCode turn.
+- Claude Code's Agent tool takes `opus`, `sonnet`, `haiku` or `fable`, so
+  subagents are steered between Claude models only.
+
+## Claude Code subagent hook (hosted router)
 
 ```bash
 npm i -g @caveman-ai/router-claude-code
