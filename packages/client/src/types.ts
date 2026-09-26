@@ -8,6 +8,28 @@ export type Slider = "cheapest" | "cheaper" | "balanced" | "careful" | "never_ch
 /** Canonical outcome kinds accepted by POST /v1/route/outcomes. */
 export type OutcomeKind = "retry" | "test_pass" | "test_fail" | "abandoned" | "completed";
 
+/** `agent` weighs the repository and the session's edits alongside the prompt. */
+export type RoutingMode = "balanced" | "cost-efficient" | "agent";
+
+/** Shape of the working repository: counts, a byte total and language names.
+ * No paths and no file contents. Every field is optional. */
+export interface RepoProfile {
+  files?: number;
+  bytes?: number;
+  /** At most 16 short lowercase names, most files first. */
+  languages?: string[];
+  test_files?: number;
+  touched_files?: number;
+  touched_dirs?: number;
+}
+
+/** Optional task facts. /v1/route takes them at the top level; the proxies
+ * take them under `routing`. */
+export interface RoutingOptions {
+  mode?: RoutingMode;
+  repo?: RepoProfile;
+}
+
 // --- POST /v1/route ---------------------------------------------------------
 
 export interface RouteMessage {
@@ -21,7 +43,7 @@ export interface RouteCacheHint {
   read_tokens: number;
 }
 
-export interface RouteRequest {
+export interface RouteRequest extends RoutingOptions {
   text?: string;
   messages?: RouteMessage[];
   models: string[];
@@ -191,6 +213,7 @@ export interface DelegateRequest {
   task: DelegateTask;
   models?: string[];
   harness?: Harness;
+  repo?: RepoProfile;
   tools?: unknown[];
   /** Without it the endpoint only reports inline_recommended; the caller owns the deny. */
   veto?: boolean;
@@ -199,7 +222,7 @@ export interface DelegateRequest {
 
 export interface DelegateChild {
   model: string;
-  /** null in v1: the child's effort is its definition's. */
+  /** Advisory: a harness without an effort knob cannot apply it. */
   effort: string | null;
   context: string;
 }
@@ -236,6 +259,15 @@ export interface DelegateClassification {
   latency_ms: number;
 }
 
+/** Advisory only: what the PARENT would run best on. Never applied. */
+export interface DelegateOrchestrator {
+  model: string;
+  effort?: string;
+  /** `parent_kept` when the parent is already the right pick. */
+  reason: string;
+  applied: boolean;
+}
+
 export interface DelegateResponse {
   decision: string;
   delegate: DelegateChild;
@@ -252,6 +284,7 @@ export interface DelegateResponse {
   line_channel: string;
   inline_recommended: boolean;
   router_version: string;
+  orchestrator?: DelegateOrchestrator;
 }
 
 // --- outcomes ---------------------------------------------------------------
