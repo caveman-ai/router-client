@@ -21,6 +21,7 @@ process.stdin.on("end", () => {
   fs.appendFileSync(path.join(home, "routerd-calls.jsonl"), JSON.stringify(args) + "\\n");
   fs.appendFileSync(path.join(home, "routerd-env.jsonl"), JSON.stringify(Object.keys(process.env).filter((k) => /API_KEY/.test(k))) + "\\n");
   if (input) fs.appendFileSync(path.join(home, "routerd-stdin.jsonl"), JSON.stringify({ args, input }) + "\\n");
+  if (process.env.FAKE_FAIL && args[0] === process.env.FAKE_FAIL) process.exit(1);
   if (args[0] === "token") process.stdout.write("${TOKEN}\\n");
   if (args[0] === "status") process.stdout.write(JSON.stringify({ running: true, port: 47821, version: "test", sessions: 0, brain: { ok: true, latency_ms: 3 },
     pool: process.env.FAKE_POOL_WINDOWS ? [

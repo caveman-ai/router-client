@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ROUTERD } from "./routerd.js";
 import type { PoolModel } from "./routerd.js";
-import { applyKeys, currentValue, formatJson, userValue, parseJsonObject, readText, recordFor, restoreKeys, restoreManaged, writeManaged } from "./files.js";
+import { applyKeys, currentValue, formatJson, looseMode, userValue, parseJsonObject, readText, recordFor, restoreKeys, restoreManaged, writeManaged } from "./files.js";
 import type { FileRecord, Json, SetupState } from "./files.js";
 
 // Claude Code: user settings only. Base URL at the daemon, the local token and
@@ -75,7 +75,11 @@ export function configureClaudeCode(state: SetupState, options: ClaudeOptions): 
   // Our header lines replace any line with the same header name; the prior
   // value is restored whole on teardown.
   const lines = headerLines(userValue(root, record, "env.ANTHROPIC_CUSTOM_HEADERS")).filter((line) => ![TOKEN_HEADER, MODE_HEADER].includes(headerName(line)));
-  lines.push(`${TOKEN_HEADER}: ${options.token}`, `${MODE_HEADER}: ${options.mode}`);
+  // The token header only where nothing else carries it: in key mode
+  // apiKeyHelper sends the token (Bearer / x-api-key), which the proxy
+  // accepts; with a subscription that slot holds the claude.ai login.
+  if (options.claude !== "key") lines.push(`${TOKEN_HEADER}: ${options.token}`);
+  lines.push(`${MODE_HEADER}: ${options.mode}`);
 
   const desired: Record<string, unknown> = {
     "env.ANTHROPIC_BASE_URL": `http://127.0.0.1:${options.port}`,
@@ -136,7 +140,11 @@ export function configureClaudeCode(state: SetupState, options: ClaudeOptions): 
   if (Object.keys(hooks).length > 0) root.hooks = hooks;
   else delete root.hooks;
 
-  const changed = writeManaged(state, path, formatJson(root, original));
+  const next = formatJson(root, original);
+  const secret = next.includes(options.token);
+  const loose = secret && looseMode(path);
+  const changed = writeManaged(state, path, next, secret);
+  if (loose) notes.push(`${path} was readable by other users; it now holds the local token, so it is 0600`);
   return { path, changed, notes };
 }
 
@@ -161,4 +169,9 @@ function surgical(current: string, record: FileRecord): string | null {
 export function teardownClaudeCode(state: SetupState): string {
   const path = claudeSettingsPath();
   return `${path}: ${restoreManaged(state, path, surgical)}`;
+}
+
+/** Where setup would write the local token, for the dotfiles check. */
+export function claudeTokenPath(claude: ClaudeOptions["claude"]): string | undefined {
+  return claude === "key" ? undefined : claudeSettingsPath();
 }

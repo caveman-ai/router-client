@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { daemonHome } from "@caveman-ai/router-client";
 
@@ -15,6 +15,8 @@ export type FileRecord = {
   backup: string | null;
   /** sha256 of what setup last wrote. */
   written: string;
+  /** The file's mode before setup first touched it (restored with its bytes). */
+  mode?: number;
   /** JSON keys setup set (path key → value) and what they were before. */
   set?: Record<string, unknown>;
   prior?: Record<string, unknown>;
@@ -39,7 +41,7 @@ export function loadState(): SetupState {
 }
 
 export function saveState(state: SetupState): void {
-  atomicWrite(statePath(), JSON.stringify(state, null, 2) + "\n", 0o600);
+  atomicWrite(statePath(), JSON.stringify(state, null, 2) + "\n", { secret: true });
 }
 
 /** undefined when the file does not exist; any other read error throws, so a
@@ -63,13 +65,15 @@ function writeTarget(path: string): string {
 }
 
 /** Temp file + rename, with a unique temp name (concurrent writers never
- * share one). The file keeps its mode; a new file is 0600, since most of
- * what setup writes carries the local token. */
-function atomicWrite(path: string, text: string, mode = 0o600): void {
+ * share one). The file keeps its mode; a new file is 0600. `secret` (the
+ * text carries the local token) also drops group/other access, from the temp
+ * file's creation on. */
+function atomicWrite(path: string, text: string, options: { mode?: number; secret?: boolean } = {}): void {
   const target = writeTarget(path);
   mkdirSync(dirname(target), { recursive: true });
-  let keep = mode;
+  let keep = options.mode ?? 0o600;
   try { keep = statSync(target).mode & 0o777; } catch { /* new file */ }
+  if (options.secret) keep &= 0o700;
   const temp = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   writeFileSync(temp, text, { mode: keep, flag: "wx" });
   try {
@@ -83,43 +87,71 @@ function atomicWrite(path: string, text: string, mode = 0o600): void {
 
 const stamp = (): string => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 
-/** Backups hold the same token-bearing content: always 0600. */
+/** Backups may hold the token: created 0600 (never a wider moment), then filled. */
 function backup(path: string): string {
   let target = `${path}.caveman-backup-${stamp()}`;
   for (let n = 1; existsSync(target); n++) target = `${path}.caveman-backup-${stamp()}-${n}`;
-  copyFileSync(path, target);
-  chmodSync(target, 0o600);
+  const fd = openSync(target, "wx", 0o600);
+  try { writeSync(fd, readFileSync(path)); } finally { closeSync(fd); }
   return target;
+}
+
+/** Readable by group or others. */
+export function looseMode(path: string): boolean {
+  try { return (statSync(path).mode & 0o077) !== 0; } catch { return false; }
 }
 
 // ------------------------------------------------------------------ the lock
 
 const LOCK_WAIT_MS = 30_000;
+// A lock younger than this is held even if its pid is missing or dead: its
+// owner may still be between creating it and writing to it.
+const LOCK_FRESH_MS = 5_000;
 
-function lockHolderAlive(lock: string): boolean {
-  const pid = Number(readText(lock)?.trim());
+function lockHeld(lock: string): boolean {
+  let age: number;
+  try { age = Date.now() - statSync(lock).mtimeMs; } catch { return false; }
+  if (age < LOCK_FRESH_MS) return true;
+  const pid = Number(readText(lock)?.trim() || NaN);
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-/** One setup or teardown at a time: an exclusive lock file holding our pid.
- * A second run waits for it; a lock whose process is gone is taken over. */
+/** Atomic create: the pid goes into a temp file first, then link() puts it in
+ * place, which fails if a lock exists. The lock is never seen empty. */
+function tryLock(lock: string): boolean {
+  const temp = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
+  writeFileSync(temp, String(process.pid), { mode: 0o600, flag: "wx" });
+  try {
+    linkSync(temp, lock);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    unlinkSync(temp);
+  }
+}
+
+/** Takes a stale lock out of the way atomically: rename it aside, then check
+ * the file we got really is stale; a live one (taken meanwhile) goes back. */
+function clearStale(lock: string): void {
+  const aside = `${lock}.stale.${process.pid}.${randomBytes(4).toString("hex")}`;
+  try { renameSync(lock, aside); } catch { return; }
+  if (lockHeld(aside)) { try { linkSync(aside, lock); } catch { /* another lock is there now */ } }
+  try { unlinkSync(aside); } catch { /* gone */ }
+}
+
+/** One setup or teardown at a time. A second run waits for the lock; a lock
+ * whose process is gone (and is older than 5 s) is taken over. */
 export async function withSetupLock<T>(fn: () => Promise<T>): Promise<T> {
   const lock = join(daemonHome(), "router-setup.lock");
   mkdirSync(daemonHome(), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      const fd = openSync(lock, "wx", 0o600);
-      writeSync(fd, String(process.pid));
-      closeSync(fd);
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (!lockHolderAlive(lock)) { try { unlinkSync(lock); } catch { /* raced */ } continue; }
-      if (Date.now() > deadline) throw new Error(`another caveman-router setup or teardown holds ${lock}; try again when it finishes`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+  while (!tryLock(lock)) {
+    if (!lockHeld(lock)) { clearStale(lock); continue; }
+    if (Date.now() > deadline) throw new Error(`another caveman-router setup or teardown holds ${lock}; try again when it finishes`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   try {
     return await fn();
@@ -136,6 +168,7 @@ export function recordFor(state: SetupState, path: string): FileRecord {
   let record = state.files[path];
   if (!record) {
     record = { existed: current !== undefined, backup: null, written: "" };
+    if (current !== undefined) record.mode = statSync(path).mode & 0o777;
     state.files[path] = record;
   } else if (current !== undefined && sha(current) !== record.written) {
     record.backup = null;
@@ -145,11 +178,12 @@ export function recordFor(state: SetupState, path: string): FileRecord {
 
 /** Writes `next` if it differs from what is on disk; false when it was
  * already there (an idempotent re-run writes and backs up nothing). */
-export function writeManaged(state: SetupState, path: string, next: string): boolean {
+export function writeManaged(state: SetupState, path: string, next: string, secret = false): boolean {
   const record = recordFor(state, path);
   const current = readText(path);
   if (current === next) {
     record.written = sha(next);
+    if (secret && looseMode(path)) chmodSync(writeTarget(path), statSync(path).mode & 0o700);
     return false;
   }
   if (current !== undefined) {
@@ -157,7 +191,7 @@ export function writeManaged(state: SetupState, path: string, next: string): boo
     // Only the first backup is the pre-setup original.
     if (record.written === "" && record.existed) record.backup = copy;
   }
-  atomicWrite(path, next);
+  atomicWrite(path, next, { secret });
   record.written = sha(next);
   return true;
 }
@@ -177,6 +211,7 @@ export function restoreManaged(state: SetupState, path: string, surgical: (curre
     if (!record.existed) { unlinkSync(path); return "removed"; }
     if (record.backup && existsSync(record.backup)) {
       atomicWrite(path, readFileSync(record.backup, "utf8"));
+      if (record.mode !== undefined) chmodSync(writeTarget(path), record.mode);
       return "restored";
     }
   }

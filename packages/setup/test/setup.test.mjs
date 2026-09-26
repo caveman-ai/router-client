@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import test from "node:test";
 import { daemonReplies, fakeDaemon } from "../../client/test/fake-daemon.mjs";
@@ -183,7 +184,8 @@ test("--claude key: Claude Code gets the LOCAL token, the Anthropic key only rea
     const settings = JSON.parse(read(env, ".claude", "settings.json"));
     assert.equal(settings.apiKeyHelper, "caveman-routerd token", "key mode reads the local token through apiKeyHelper");
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
-    assert.equal(JSON.stringify(settings).split(TOKEN).length - 1, 1, "one token copy: the custom header the proxy requires");
+    assert.ok(!JSON.stringify(settings).includes(TOKEN), "key mode: no token copy (apiKeyHelper sends it)");
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, "x-cave-routing-mode: agent");
     assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined, "an all-Claude pool needs no window override");
     assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
     assert.deepEqual(stdinOf(env.home), [{ args: ["keys", "set", "anthropic"], input: ANTHROPIC_KEY }]);
@@ -425,6 +427,113 @@ test("caveman-routerd never sees the provider keys in its environment", { timeou
   try {
     assert.equal((await run(env, ["setup", "--yes", "--harness", "opencode", "--openai", "key", "--preset", "cheap"], { extraEnv: { OPENAI_API_KEY: OPENAI_KEY, ANTHROPIC_API_KEY: ANTHROPIC_KEY } })).code, 0);
     assert.deepEqual(envOf(env.home).flat(), []);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a world-readable settings.json is tightened to 0600 when the token goes in, and loosened back on teardown", { timeout: 60_000 }, async () => {
+  const env = box();
+  const path = join(env.home, ".claude", "settings.json");
+  writeFileSync(path, USER_SETTINGS);
+  chmodSync(path, 0o644);
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  try {
+    const out = await run(env, ["setup", "--yes", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"]);
+    assert.equal(out.code, 0, out.stderr);
+    assert.equal(modeOf(path), "600");
+    assert.match(out.stdout, /0600/);
+    // Re-run on a file someone loosened again: tightened even with nothing to write.
+    chmodSync(path, 0o644);
+    assert.equal((await run(env, ["setup", "--yes", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"])).code, 0);
+    assert.equal(modeOf(path), "600");
+    assert.equal((await run(env, ["teardown", "--harness", "claude-code"])).code, 0);
+    assert.equal(readFileSync(path, "utf8"), USER_SETTINGS);
+    assert.equal(modeOf(path), "644", "the token is gone, so the original mode is back");
+  } finally {
+    await daemon.close();
+  }
+});
+
+const lockPath = (env) => join(env.home, ".caveman", "router-setup.lock");
+
+test("an empty, fresh lock counts as held (its owner is still writing the pid)", { timeout: 60_000 }, async () => {
+  const env = box();
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  mkdirSync(join(env.home, ".caveman"), { recursive: true });
+  writeFileSync(lockPath(env), "");
+  try {
+    const started = Date.now();
+    setTimeout(() => rmSync(lockPath(env), { force: true }), 1500);
+    const out = await run(env, ["setup", "--yes", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"]);
+    assert.equal(out.code, 0, out.stderr);
+    assert.ok(Date.now() - started >= 1400, "waited for the lock instead of taking it over");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("an empty lock older than 5 s is stale and taken over", { timeout: 60_000 }, async () => {
+  const env = box();
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  mkdirSync(join(env.home, ".caveman"), { recursive: true });
+  writeFileSync(lockPath(env), "");
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lockPath(env), old, old);
+  try {
+    const out = await run(env, ["setup", "--yes", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"]);
+    assert.equal(out.code, 0, out.stderr);
+    assert.equal(existsSync(lockPath(env)), false);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("teardown carries on past a failing step and exits 1", { timeout: 60_000 }, async () => {
+  const env = box();
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  try {
+    assert.equal((await run(env, ["setup", "--yes", "--harness", "claude-code,codex", "--claude", "subscription", "--openai", "key", "--preset", "cheap"], { extraEnv: { OPENAI_API_KEY: OPENAI_KEY } })).code, 0);
+    // settings.json becomes unreadable as a file: that step throws.
+    const path = join(env.home, ".claude", "settings.json");
+    rmSync(path);
+    mkdirSync(path);
+    const out = await run(env, ["teardown"], { extraEnv: { FAKE_FAIL: "uninstall-service" } });
+    assert.equal(out.code, 1);
+    assert.match(out.stdout + out.stderr, /claude-code: failed \(EISDIR/);
+    assert.equal(existsSync(join(env.home, ".codex", "caveman.config.toml")), false, "codex still torn down");
+    assert.ok(calls(env.home).some((args) => args[0] === "keys" && args[1] === "rm"), "keys still removed");
+    assert.match(out.stdout + out.stderr, /uninstall-service: failed/);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a token-bearing config symlinked into a git work tree needs --yes or a confirmation", { timeout: 60_000 }, async () => {
+  const env = box();
+  const dotfiles = join(env.home, "dotfiles");
+  mkdirSync(dotfiles);
+  execFileSync("git", ["init", "-q", dotfiles]);
+  writeFileSync(join(dotfiles, "settings.json"), "{}\n");
+  const link = join(env.home, ".claude", "settings.json");
+  symlinkSync(join(dotfiles, "settings.json"), link);
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  const args = ["setup", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"];
+  try {
+    let out = await run(env, args);
+    assert.equal(out.code, 1);
+    assert.match(out.stderr, /git work tree/);
+    assert.equal(readFileSync(join(dotfiles, "settings.json"), "utf8"), "{}\n", "nothing written without consent");
+    out = await run(env, [...args, "--yes"]);
+    assert.equal(out.code, 0, out.stderr);
+    assert.match(out.stdout + out.stderr, /git work tree/);
+    // Key mode puts no token there: no warning.
+    rmSync(link);
+    symlinkSync(join(dotfiles, "settings.json"), link);
+    writeFileSync(join(dotfiles, "settings.json"), "{}\n");
+    out = await run(env, ["setup", "--harness", "claude-code", "--claude", "key", "--preset", "cheap"], { extraEnv: { ANTHROPIC_API_KEY: ANTHROPIC_KEY } });
+    assert.equal(out.code, 0, out.stderr);
+    assert.doesNotMatch(out.stdout + out.stderr, /git work tree/);
   } finally {
     await daemon.close();
   }

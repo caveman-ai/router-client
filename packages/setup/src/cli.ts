@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { configureClaudeCode, decodePrevious, isClaudeModel, teardownClaudeCode } from "./claude-code.js";
+import { claudeTokenPath, configureClaudeCode, decodePrevious, isClaudeModel, teardownClaudeCode } from "./claude-code.js";
 import { configureCodex, teardownCodex } from "./codex.js";
 import { loadState, saveState, withSetupLock } from "./files.js";
 import { configureOpencode, teardownOpencode } from "./opencode.js";
@@ -103,6 +106,22 @@ function detectedHarnesses(): HarnessName[] {
   return found.length > 0 ? found : [...HARNESSES];
 }
 
+/** The git work tree a symlinked file's target sits in, if any. */
+function symlinkIntoGit(path: string): string | undefined {
+  let target: string;
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return undefined;
+    target = realpathSync(path);
+  } catch { return undefined; }
+  try {
+    const out = execFileSync("git", ["-C", dirname(target), "rev-parse", "--is-inside-work-tree", "--show-toplevel"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+    }).trim().split("\n");
+    return out[0] === "true" ? out[1] ?? dirname(target) : undefined;
+  } catch { return undefined; }
+}
+
 function parseHarnesses(value: string): HarnessName[] {
   if (value === "all") return [...HARNESSES];
   const list = value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -142,6 +161,19 @@ async function setup(): Promise<void> {
   const claudeCliAdapter = has("claude-cli-adapter");
   const contextWindow = flag("context-window") === undefined ? undefined : Number(flag("context-window"));
   if (contextWindow !== undefined && !(Number.isInteger(contextWindow) && contextWindow > 0)) fail("--context-window takes a token count, e.g. 272000");
+
+  // A token file that is a symlink into a git work tree (a dotfiles repo)
+  // would put the token one commit away from a remote.
+  const tokenPath = harnesses.includes("claude-code") ? claudeTokenPath(claude as "subscription" | "key" | "none") : undefined;
+  const repo = tokenPath ? symlinkIntoGit(tokenPath) : undefined;
+  if (repo) {
+    const warning = `warning: ${tokenPath} links into the git work tree ${repo}; setup would write the local token (which grants use of your keys) there. Keep it out of commits.`;
+    if (has("yes")) console.error(warning);
+    else if (stdin.isTTY) {
+      console.error(warning);
+      if ((await ask("Write it anyway? (yes/no)", "no")).toLowerCase() !== "yes") fail("not writing the token into a git work tree");
+    } else fail(`${warning}\nRe-run with --yes to write it anyway.`);
+  }
 
   const keys: Record<string, string> = {};
   for (const [provider, wanted] of [["anthropic", claude === "key"], ["openai", openai === "key"], ["openrouter", openrouter === "key"]] as const) {
@@ -251,25 +283,43 @@ async function teardown(): Promise<void> {
   const only = flag("harness");
   const harnesses = only ? parseHarnesses(only) : [...HARNESSES];
   const lines: string[] = [];
+  let failed = false;
+  // Every step runs whatever happened to the one before; failures are
+  // reported and make the exit code 1.
+  const step = async (name: string, run: () => Promise<string[]> | string[]) => {
+    try {
+      lines.push(...(await run()));
+    } catch (error) {
+      failed = true;
+      lines.push(`${name}: failed (${(error as Error).message})`);
+    } finally {
+      saveState(state);
+    }
+  };
   for (const harness of harnesses) {
-    if (harness === "claude-code") lines.push(teardownClaudeCode(state));
-    else if (harness === "codex") lines.push(...teardownCodex(state));
-    else lines.push(...teardownOpencode(state));
-    saveState(state);
+    if (harness === "claude-code") await step(harness, () => [teardownClaudeCode(state)]);
+    else if (harness === "codex") await step(harness, () => teardownCodex(state));
+    else await step(harness, () => teardownOpencode(state));
   }
   // The whole thing: the service and the keys setup stored go too.
   if (!only && routerdOnPath()) {
     for (const provider of state.keys ?? []) {
-      const removed = await routerd(["keys", "rm", provider]);
-      lines.push(`${ROUTERD} keys rm ${provider}: ${removed.code === 0 ? "done" : "failed"}`);
+      await step(`${ROUTERD} keys rm ${provider}`, async () => {
+        const removed = await routerd(["keys", "rm", provider]);
+        if (removed.code !== 0) throw new Error(removed.stderr.trim() || `exit ${removed.code}`);
+        state.keys = (state.keys ?? []).filter((name) => name !== provider);
+        return [`${ROUTERD} keys rm ${provider}: done`];
+      });
     }
-    state.keys = [];
-    const uninstalled = await routerd(["uninstall-service"]);
-    lines.push(`${ROUTERD} uninstall-service: ${uninstalled.code === 0 ? "done" : "failed"}`);
-    saveState(state);
+    await step(`${ROUTERD} uninstall-service`, async () => {
+      const uninstalled = await routerd(["uninstall-service"]);
+      if (uninstalled.code !== 0) throw new Error(uninstalled.stderr.trim() || `exit ${uninstalled.code}`);
+      return [`${ROUTERD} uninstall-service: done`];
+    });
   }
   for (const line of lines.filter((line) => !line.endsWith(": unmanaged"))) console.log(line);
   console.log("restored = original bytes back; removed = setup created it; edited = only setup's keys taken out. Restart your harnesses.");
+  if (failed) process.exitCode = 1;
 }
 
 const USAGE = `usage:

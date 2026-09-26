@@ -54,16 +54,19 @@ Running setup again is safe: it changes only what differs.
 | --- | --- |
 | Your OS keychain (via `caveman-routerd`) | Provider API keys. Never in a harness file, never on a command line. |
 | `~/.caveman/` | The daemon's config, its local token and its socket; `router-setup.json` records what setup changed. |
-| `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_CUSTOM_HEADERS` (the local token and routing mode), `env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, `model: "auto"`, hooks, and a statusline wrapper that still runs your own statusline. With non-Claude models in the pool: one `/model` picker entry and `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS`. With `--claude key`: `apiKeyHelper: "caveman-routerd token"`. |
+| `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_CUSTOM_HEADERS` (the routing mode, and the local token unless `--claude key`), `env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, `model: "auto"`, hooks, and a statusline wrapper that still runs your own statusline. With non-Claude models in the pool: one `/model` picker entry and `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS`. With `--claude key`: `apiKeyHelper: "caveman-routerd token"`. |
 | `~/.codex/caveman.config.toml` | A Codex profile of its own: the `caveman` provider (its token comes from `caveman-routerd codex-auth`), `model = "auto"` and the hooks. Use `codex --profile caveman`. Your `config.toml` is not edited. |
 | `~/.config/opencode/opencode.json`, `plugins/caveman-router.js` | The `caveman` provider (`apiKey: "{file:~/.caveman/routerd.token}"`) and a plugin that adds the token header and tags requests with the session. Pick `caveman/auto`. |
 
 The local token (`~/.caveman/routerd.token`) grants use of the local proxy,
-and so of the provider keys the daemon holds: treat it like a key. Only
-`~/.claude/settings.json` holds a copy (Claude Code has no other way to send
-the header the proxy requires). Codex gets it from `caveman-routerd codex-auth`
-and OpenCode reads it from its file. Files setup creates, and every backup,
-are `0600`; a file it edits keeps its mode.
+and so of the provider keys the daemon holds: treat it like a key. The one
+copy outside `~/.caveman` is in `~/.claude/settings.json` with a Claude
+subscription (a custom header is the only way Claude Code can send it next to
+the claude.ai login); setup makes that file `0600` and says so, and asks
+before writing it through a symlink into a git work tree. With `--claude key`,
+`apiKeyHelper` sends it instead and settings.json holds no copy. Codex gets it
+from `caveman-routerd codex-auth` and OpenCode reads it from its file. Files
+setup creates, and every backup, are `0600`.
 
 The hooks give the daemon the first 500 characters of each ask, subagent
 prompts, the statusline JSON and a repository profile (counts and language
