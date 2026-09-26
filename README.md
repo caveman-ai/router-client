@@ -110,6 +110,10 @@ when it cannot reach it. `caveman-routerd install-service` restarts it;
 - Codex needs a Codex CLI with profile files (`<name>.config.toml`; checked
   with 0.156) and a `caveman-routerd` build that serves the Responses API.
   Codex asks you to trust the new hooks on its next start.
+- Codex applies the model and effort the hook picks for `spawn_agent`
+  (checked end to end with Codex 0.156.1). The model must be an id in the
+  catalog Codex loaded from the daemon's `/models`; Codex rejects any other
+  id and that spawn fails, so the daemon must only answer with ids it lists.
 - OpenCode's per-turn model setting (`CAVEMAN_OPENCODE_SET_MODEL=1`) is
   experimental: it is read from OpenCode's source and has not been run
   against a live OpenCode turn.
