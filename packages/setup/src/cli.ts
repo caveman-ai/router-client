@@ -58,17 +58,31 @@ async function ask(question: string, fallback: string): Promise<string> {
   }
 }
 
-async function askSecret(question: string): Promise<string> {
-  const rl = createInterface({ input: stdin, output: stdout, terminal: true });
-  const internal = rl as unknown as { _writeToOutput: (text: string) => void };
-  const write = internal._writeToOutput.bind(rl);
-  internal._writeToOutput = (text: string) => { if (text.includes(question)) write(text); };
-  try {
-    return (await rl.question(question)).trim();
-  } finally {
-    rl.close();
-    stdout.write("\n");
-  }
+/** A hidden prompt: raw mode, nothing echoed. */
+function askSecret(question: string): Promise<string> {
+  stdout.write(question);
+  stdin.setRawMode(true);
+  stdin.setEncoding("utf8");
+  stdin.resume();
+  return new Promise((resolve) => {
+    let value = "";
+    const finish = (interrupted: boolean) => {
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdout.write("\n");
+      if (interrupted) process.exit(130);
+      resolve(value.trim());
+    };
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n") return finish(false);
+        if (ch === "\u0003") return finish(true);
+        value = ch === "\u007f" || ch === "\b" ? value.slice(0, -1) : value + ch;
+      }
+    };
+    stdin.on("data", onData);
+  });
 }
 
 async function choose(name: string, question: string, options: string[], fallback: string): Promise<string> {
@@ -117,11 +131,13 @@ async function setup(): Promise<void> {
   const claude = await choose("claude", "Claude access: your claude.ai subscription (Claude Code only), an API key, or none", ["subscription", "key", "none"], harnesses.includes("claude-code") ? "subscription" : "none");
   const openai = await choose("openai", "OpenAI access: an API key, your ChatGPT subscription (off by default, see README), or none", ["key", "subscription", "none"], "none");
   const openrouter = await choose("openrouter", "OpenRouter API key (any other model)", ["key", "none"], "none");
+  const ids = (value: string): string[] => value.split(",").map((id) => id.trim()).filter(Boolean);
   let models: string[];
-  if (flag("models")) models = flag("models")!.split(",").map((id) => id.trim()).filter(Boolean);
+  if (flag("models")) models = ids(flag("models")!);
+  else if (flag("preset") !== undefined || !interactive()) models = PRESETS[await choose("preset", "", Object.keys(PRESETS), "balanced")]!;
   else {
-    const preset = await choose("preset", "Models to route between", Object.keys(PRESETS), "balanced");
-    models = PRESETS[preset]!;
+    const answer = await ask(`Models to route between: a preset (${Object.keys(PRESETS).join("/")}) or ids like anthropic/claude-sonnet-5,openai/gpt-6-astra`, "balanced");
+    models = PRESETS[answer] ?? ids(answer);
   }
   const mode = await choose("mode", "Routing mode", MODES, "agent");
   const claudeCliAdapter = has("claude-cli-adapter");
@@ -139,7 +155,9 @@ async function setup(): Promise<void> {
 
   const access = new Set<string>();
   if (claude !== "none") access.add("anthropic");
-  if (openai !== "none") access.add("openai");
+  // The subscription switches are recorded for the daemon, but no daemon
+  // build uses them yet: only a key gives OpenAI access today.
+  if (openai === "key") access.add("openai");
   const pool = models.filter((id) => access.has(vendor(id)) || openrouter === "key");
   const dropped = models.filter((id) => !pool.includes(id));
   if (pool.length === 0) fail(`none of ${models.join(", ")} is reachable with the access you chose`);
@@ -180,7 +198,7 @@ async function setup(): Promise<void> {
 
   // 6. Each harness. A Claude subscription reaches Claude models in Claude
   // Code only; elsewhere they need a key or the experimental CLI adapter.
-  const outside = (models: PoolModel[]) => (claude === "subscription" && !claudeCliAdapter ? models.filter((model) => !isClaudeModel(model.id)) : models);
+  const outside = (models: PoolModel[]) => (claude === "subscription" ? models.filter((model) => !isClaudeModel(model.id)) : models);
   const lines: string[] = [];
   const notes: string[] = [];
   const tests: string[] = [];
@@ -214,8 +232,8 @@ async function setup(): Promise<void> {
   if (dropped.length > 0) console.log(`skipped          ${dropped.join(", ")} (no access)`);
   console.log(`keys             ${Object.keys(keys).length > 0 ? `${Object.keys(keys).join(", ")} in ${ROUTERD}'s keychain` : "none stored"}`);
   if (claude === "subscription") console.log("claude           your claude.ai subscription, passed through unchanged in Claude Code only");
-  if (openai === "subscription") console.log("chatgpt          subscriptions.chatgpt on (grey per OpenAI's terms; setup never reads ~/.codex/auth.json)");
-  if (claudeCliAdapter) console.log("experimental     subscriptions.claude_cli_adapter on");
+  if (openai === "subscription") console.log("chatgpt          subscriptions.chatgpt on (grey per OpenAI's terms; setup never reads ~/.codex/auth.json). caveman-routerd does not use it yet: OpenAI models need a key");
+  if (claudeCliAdapter) console.log("experimental     subscriptions.claude_cli_adapter on. caveman-routerd does not implement it yet: Claude models outside Claude Code need a key");
   console.log("configured");
   for (const line of lines) console.log(line);
   for (const note of notes) console.log(`note: ${note}`);
