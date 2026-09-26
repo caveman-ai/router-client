@@ -1,0 +1,14 @@
+{
+  "name": "caveman",
+  "owner": {
+    "name": "Caveman"
+  },
+  "description": "Caveman's open-source Claude Code plugins.",
+  "plugins": [
+    {
+      "name": "caveman-router",
+      "source": "./packages/claude-code-plugin",
+      "description": "Route Claude Code through caveman-routerd, the local Caveman routing daemon."
+    }
+  ]
+}

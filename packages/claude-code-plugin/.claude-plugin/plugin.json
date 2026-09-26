@@ -1,0 +1,9 @@
+{
+  "name": "caveman-router",
+  "description": "Route Claude Code through caveman-routerd, the local Caveman routing daemon: prompt prefetch, subagent model steering and outcome events. The statusline and connection settings come from `caveman-router setup`.",
+  "version": "0.1.0",
+  "author": { "name": "Caveman" },
+  "homepage": "https://github.com/caveman-ai/router-client",
+  "repository": "https://github.com/caveman-ai/router-client",
+  "license": "Apache-2.0"
+}
