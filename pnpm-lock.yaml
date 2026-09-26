@@ -23,6 +23,12 @@ importers:
 
   packages/client: {}
 
+  packages/codex-hook:
+    dependencies:
+      '@caveman-ai/router-client':
+        specifier: workspace:^
+        version: link:../client
+
 packages:
 
   '@types/node@22.20.4':
