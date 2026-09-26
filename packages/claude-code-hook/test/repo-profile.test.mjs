@@ -119,7 +119,7 @@ echo "$GIT_NO_LAZY_FETCH$GIT_TERMINAL_PROMPT$GIT_OPTIONAL_LOCKS" > "${bin}/env"
 case "$3" in
   rev-parse) echo 1111111111111111111111111111111111111111 ;;
   config) exit 1 ;;
-  ls-tree) sleep 5 & exit 0 ;;
+  ls-tree) (head -c 200000 /dev/zero | tr '\\0' a; sleep 5) & exit 0 ;;
 esac
 `);
   chmodSync(join(bin, "git"), 0o755);
@@ -136,6 +136,29 @@ esac
     const again = Date.now();
     assert.deepEqual(await repoProfile(dir, 300), { files: 1_000_000 });
     assert.ok(Date.now() - again < 200, `re-walked (${Date.now() - again} ms)`);
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
+test("a walk that times out having streamed almost nothing is a slow machine, not a large repo", async () => {
+  const home = mkdtempSync(join(tmpdir(), "router-home-"));
+  process.env.CAVEMAN_ROUTER_HOME = home;
+  const dir = mkdtempSync(join(tmpdir(), "router-slow-"));
+  const bin = mkdtempSync(join(tmpdir(), "router-bin-"));
+  writeFileSync(join(bin, "git"), `#!/bin/sh
+case "$3" in
+  rev-parse) echo 2222222222222222222222222222222222222222 ;;
+  config) exit 1 ;;
+  ls-tree) sleep 5 & exit 0 ;;
+esac
+`);
+  chmodSync(join(bin, "git"), 0o755);
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}:${saved}`;
+  try {
+    assert.equal(await repoProfile(dir, 300), undefined);
+    assert.deepEqual(readdirSync(home).includes("spawn") ? readdirSync(join(home, "spawn")).filter((name) => name.startsWith("repo-")) : [], []);
   } finally {
     process.env.PATH = saved;
   }

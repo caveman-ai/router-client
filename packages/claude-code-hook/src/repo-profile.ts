@@ -56,9 +56,25 @@ export function profileFromLsTree(out: string): RepoProfile {
 const GIT_ENV = { GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
 const GIT_MAX_OUTPUT = 64 * 1024 * 1024;
 
-/** A walk that ran out of time: the tree is big enough that one git call does
- * not finish inside the budget. */
-class GitTimeout extends Error {}
+/** A git call that ran out of time. `bytes` is how much output it had streamed:
+ * a walk that timed out after streaming a lot is a big tree, one that streamed
+ * almost nothing was just a slow machine. */
+class GitTimeout extends Error {
+  constructor(readonly bytes = 0) { super("git timed out"); }
+}
+
+// ls-tree -l lines run ~100 bytes, so this is past the router's 2000-file
+// `large` line; a timeout below it is load, not size.
+const LARGE_TREE_BYTES = 128 * 1024;
+
+/** Kill git and everything it started. POSIX: the process group. Windows has
+ * no groups; taskkill /T walks the tree. */
+function killTree(pid: number): void {
+  try {
+    if (process.platform === "win32") spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", detached: true }).unref();
+    else process.kill(-pid, "SIGKILL");
+  } catch { /* already gone */ }
+}
 
 /** git in its own process group. At the deadline the WHOLE group is killed and
  * the promise settles at once, so a grandchild (a fetch helper, a credential
@@ -83,14 +99,16 @@ function git(cwd: string, args: string[], timeout: number): Promise<string> {
       settled = true;
       clearTimeout(timer);
       if (error) {
-        try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+        if (child.pid) killTree(child.pid);
         child.stdout?.destroy();
+        // A detached child must not keep the hook's event loop alive.
+        child.unref();
         reject(error);
       } else {
         resolve(out);
       }
     };
-    const timer = setTimeout(() => finish(new GitTimeout()), timeout);
+    const timer = setTimeout(() => finish(new GitTimeout(size)), timeout);
     child.stdout!.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > GIT_MAX_OUTPUT) finish(new Error("git output too large"));
@@ -139,15 +157,16 @@ export async function repoProfile(cwd: unknown, budgetMs = PROFILE_BUDGET_MS): P
     const partial = (await git(cwd, ["config", "--get-regexp", "^(extensions\\.partialclone|remote\\..*\\.promisor)$"], left()).catch((error) => {
       if (error instanceof GitTimeout) throw error;
       return ""; // exit 1: neither is set
-    })).split("\n").some((line) => /^extensions\.partialclone \S/i.test(line) || /\.promisor true$/i.test(line.trim()));
+    })).split("\n").some((line) => /^extensions\.partialclone \S/i.test(line) || /\.promisor (true|yes|on|1)$/i.test(line.trim()));
     const walkBudget = left();
     let out: string;
     try {
       out = await git(cwd, ["ls-tree", "-r", ...(partial ? [] : ["-l"]), "-z", "--full-tree", head], walkBudget);
     } catch (error) {
-      // Only a walk that had most of the budget and still ran out says the
-      // tree is large; a walk squeezed by a late start says nothing.
-      if (error instanceof GitTimeout && walkBudget >= PROFILE_BUDGET_MS / 2) return save(TIMED_OUT_PROFILE);
+      // Only a walk that had most of the budget AND had streamed a big tree's
+      // worth of output says the tree is large; a late start or a loaded
+      // machine says nothing.
+      if (error instanceof GitTimeout && walkBudget >= PROFILE_BUDGET_MS / 2 && error.bytes >= LARGE_TREE_BYTES) return save(TIMED_OUT_PROFILE);
       return undefined;
     }
     const profile = profileFromLsTree(out);
