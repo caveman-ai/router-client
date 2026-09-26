@@ -17,9 +17,10 @@ export const SPAWN_TIMEOUT_MS = 2000;
 
 export type DaemonHarness = "claude-code" | "codex" | "opencode";
 
-/** `~/.caveman`, resolved per call so a test's temp HOME applies. */
+/** `$CAVEMAN_HOME`, else `~/.caveman` (as the daemon resolves it), per call
+ * so a test's temp HOME applies. */
 export function daemonHome(): string {
-  return join(homedir(), ".caveman");
+  return process.env.CAVEMAN_HOME || join(homedir(), ".caveman");
 }
 
 export function socketPath(): string {

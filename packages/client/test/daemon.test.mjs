@@ -73,3 +73,17 @@ test("a non-2xx or unparsable spawn answer is no answer", async () => {
     restore();
   }
 });
+
+test("CAVEMAN_HOME moves the socket, as it moves the daemon's state directory", async () => {
+  const state = tempHome();
+  const restore = withHome(tempHome());
+  process.env.CAVEMAN_HOME = `${state}/.caveman`;
+  const daemon = await fakeDaemon(state, daemonReplies());
+  try {
+    assert.equal(await daemonHealthy(), true);
+  } finally {
+    delete process.env.CAVEMAN_HOME;
+    await daemon.close();
+    restore();
+  }
+});

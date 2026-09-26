@@ -52,6 +52,7 @@ test("PreToolUse Agent: the daemon's model becomes updatedInput.model, other fie
     assert.equal(reply.systemMessage, "Caveman · child on Haiku");
     assert.equal(daemon.seen[0].body.tool, "Agent");
     assert.equal(daemon.seen[0].body.harness, "claude-code");
+    assert.deepEqual(daemon.seen[0].body.tool_input, { prompt: "scan", description: "scan", subagent_type: "explore", model: "opus", model_declared: false });
   } finally { await daemon.close(); }
 });
 
@@ -88,8 +89,8 @@ test("events with a stuck daemon do not hold the harness", async () => {
   const daemon = await fakeDaemon(home, undefined, { hang: true });
   try {
     for (const event of [
-      { hook_event_name: "UserPromptSubmit", session_id: "s", prompt: "x" },
-      { hook_event_name: "PostToolUse", session_id: "s", tool_name: "Bash", tool_response: {} },
+      { hook_event_name: "UserPromptSubmit", session_id: "s", prompt_id: "p", prompt: "x" },
+      { hook_event_name: "PostToolUse", session_id: "s", tool_name: "Agent", tool_input: {}, tool_response: {} },
       { hook_event_name: "Stop", session_id: "s" },
     ]) {
       const out = await hook(home, event);
@@ -120,7 +121,7 @@ test("SessionStart: a healthy daemon is silent and gets the repo profile", async
   } finally { await daemon.close(); }
 });
 
-test("PostToolUse: tool_result for every tool, subagent_done for Agent", async () => {
+test("PostToolUse: subagent_done for Agent only (Claude Code tool results reach the proxy); Stop sends stop", async () => {
   const home = tempHome();
   const daemon = await fakeDaemon(home, daemonReplies());
   try {
@@ -130,13 +131,19 @@ test("PostToolUse: tool_result for every tool, subagent_done for Agent", async (
       tool_response: { agentId: "a1", resolvedModel: "claude-sonnet-5", usage: { input_tokens: 10 }, totalDurationMs: 1200, totalToolUseCount: 3 },
     });
     await hook(home, { hook_event_name: "Stop", session_id: "s" });
-    const bodies = daemon.seen.map((entry) => entry.body);
-    assert.deepEqual(bodies[0], { harness: "claude-code", session_id: "s", kind: "tool_result", data: { tool: "Bash", ok: false, exit_code: 2 } });
-    const kinds = bodies.slice(1, 3).map((body) => body.kind).sort();
-    assert.deepEqual(kinds, ["subagent_done", "tool_result"]);
-    const done = bodies.find((body) => body.kind === "subagent_done");
-    assert.deepEqual(done.data, { agent_id: "a1", requested_model: "sonnet", resolved_model: "claude-sonnet-5", usage: { input_tokens: 10 }, duration_ms: 1200, tool_count: 3 });
-    assert.equal(bodies[3].kind, "stop");
+    assert.deepEqual(daemon.seen.map((entry) => entry.body), [
+      { harness: "claude-code", session_id: "s", kind: "subagent_done", data: { agent_id: "a1", requested_model: "sonnet", resolved_model: "claude-sonnet-5", usage: { input_tokens: 10 }, duration_ms: 1200, tool_count: 3 } },
+      { harness: "claude-code", session_id: "s", kind: "stop", data: {} },
+    ]);
+  } finally { await daemon.close(); }
+});
+
+test("UserPromptSubmit without a prompt id sends nothing (the daemon keys the prefetch on it)", async () => {
+  const home = tempHome();
+  const daemon = await fakeDaemon(home, daemonReplies());
+  try {
+    await hook(home, { hook_event_name: "UserPromptSubmit", session_id: "s1", prompt: "hi" });
+    assert.equal(daemon.seen.length, 0);
   } finally { await daemon.close(); }
 });
 

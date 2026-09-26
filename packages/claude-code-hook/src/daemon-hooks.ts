@@ -39,9 +39,12 @@ export async function sessionStart(evt: Evt): Promise<void> {
   if (repo) await postEvent(HARNESS, session(evt), "repo_profile", repo);
 }
 
+/** The daemon needs a prompt id to key the prefetch and the excerpt to decide
+ * on; without an id there is nothing to prefetch (it answers 400). */
 export async function userPromptSubmit(evt: Evt): Promise<void> {
+  if (!text(evt.prompt_id)) return;
   await postPrompt(HARNESS, session(evt), {
-    ...(text(evt.prompt_id) ? { prompt_id: evt.prompt_id } : {}),
+    prompt_id: evt.prompt_id,
     ...(text(evt.cwd) ? { cwd: evt.cwd } : {}),
     ...(text(evt.transcript_path) ? { transcript_path: evt.transcript_path } : {}),
     ...(text(evt.prompt) ? { prompt_excerpt: (evt.prompt as string).slice(0, PROMPT_EXCERPT_CHARS) } : {}),
@@ -50,10 +53,12 @@ export async function userPromptSubmit(evt: Evt): Promise<void> {
 
 /** True when the daemon answered — its answer stands, even "leave it". False
  * sends the caller to the hosted fallback. */
-export async function spawnViaDaemon(evt: Evt, input: Record<string, unknown>, parentModel: string): Promise<boolean> {
+export async function spawnViaDaemon(evt: Evt, input: Record<string, unknown>, parentModel: string, modelDeclared: boolean): Promise<boolean> {
   const decision = await spawnDecision(HARNESS, session(evt), {
     tool: "Agent",
-    tool_input: input,
+    // model_declared tells the daemon the model came from the agent
+    // definition's frontmatter; it never goes back to Claude Code.
+    tool_input: { ...input, model_declared: modelDeclared },
     parent: parentModel ? { model: parentModel } : {},
     ...(text(evt.cwd) ? { cwd: evt.cwd } : {}),
   });
@@ -69,29 +74,22 @@ export async function spawnViaDaemon(evt: Evt, input: Record<string, unknown>, p
   return true;
 }
 
+/** PostToolUse, registered for Agent only: Claude Code's tool results reach
+ * the daemon on the proxied request itself, so only the child's outcome is
+ * sent from here. */
 export async function postToolUse(evt: Evt): Promise<void> {
   const tool = text(evt.tool_name) ?? "";
+  if (tool !== "Agent" && tool !== "Task") return;
   const response = record(evt.tool_response);
-  const exitCode = num(response.exit_code) ?? num(response.exitCode);
-  const isError = response.is_error === true || response.isError === true || response.interrupted === true;
-  const events: Array<Promise<boolean>> = [postEvent(HARNESS, session(evt), "tool_result", {
-    tool,
-    ok: !isError && (exitCode === undefined || exitCode === 0),
-    ...(exitCode !== undefined ? { exit_code: exitCode } : {}),
-    ...(isError ? { is_error: true } : {}),
-  })];
-  if (tool === "Agent" || tool === "Task") {
-    const input = record(evt.tool_input);
-    events.push(postEvent(HARNESS, session(evt), "subagent_done", {
-      agent_id: text(response.agentId) ?? text(response.agent_id) ?? null,
-      requested_model: text(input.model) ?? null,
-      resolved_model: text(response.resolvedModel) ?? null,
-      usage: response.usage ?? null,
-      duration_ms: num(response.totalDurationMs) ?? null,
-      tool_count: num(response.totalToolUseCount) ?? null,
-    }));
-  }
-  await Promise.all(events);
+  const input = record(evt.tool_input);
+  await postEvent(HARNESS, session(evt), "subagent_done", {
+    agent_id: text(response.agentId) ?? text(response.agent_id) ?? null,
+    requested_model: text(input.model) ?? null,
+    resolved_model: text(response.resolvedModel) ?? null,
+    usage: response.usage ?? null,
+    duration_ms: num(response.totalDurationMs) ?? null,
+    tool_count: num(response.totalToolUseCount) ?? null,
+  });
 }
 
 export async function stopEvent(evt: Evt): Promise<void> {

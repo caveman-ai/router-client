@@ -240,7 +240,8 @@ async function decide(evt: Record<string, any>): Promise<void> {
   const parent = parentFromTranscript(text);
   // The local daemon, when it answers, owns the spawn; the hosted call below is
   // the fallback for a machine without one.
-  if (await spawnViaDaemon(evt, input, parent?.model ?? "")) return;
+  const agentType = typeof input.subagent_type === "string" ? input.subagent_type : "";
+  if (await spawnViaDaemon(evt, input, parent?.model ?? "", declaredChildModel(agentType, evt.cwd))) return;
   // No key, no call: do not spend a git walk on an answer that cannot come.
   if (!parent || !routerKey()) return;
   const repo = await sessionRepo(text, evt.cwd);
