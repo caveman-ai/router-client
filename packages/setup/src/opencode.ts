@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { applyKeys, formatJson, parseJsonObject, readText, recordFor, restoreKeys, restoreManaged, writeManaged } from "./files.js";
 import type { SetupState } from "./files.js";
 import type { PoolModel } from "./routerd.js";
+import { daemonHome } from "@caveman-ai/router-client";
 
 // OpenCode: a `caveman` provider in the global opencode.json (Anthropic
 // Messages to the daemon via @ai-sdk/anthropic) and a plugin file OpenCode
@@ -18,7 +19,7 @@ export const opencodeConfigPath = (): string => join(opencodeDir(), "opencode.js
 export const opencodePluginPath = (): string => join(opencodeDir(), "plugins", "caveman-router.js");
 export const PLUGIN_SOURCE = (): string => readFileSync(fileURLToPath(new URL("../assets/opencode-plugin.js", import.meta.url)), "utf8");
 
-export type OpencodeOptions = { port: number; token: string; mode: string; pool: PoolModel[] };
+export type OpencodeOptions = { port: number; mode: string; pool: PoolModel[] };
 
 function limit(models: PoolModel[]): { context: number; output: number } | undefined {
   const contexts = models.map((model) => model.context);
@@ -42,13 +43,19 @@ export function opencodeProvider(options: OpencodeOptions): Record<string, unkno
     name: "Caveman (local router)",
     options: {
       baseURL: `http://127.0.0.1:${options.port}/v1`,
-      // The LOCAL token, not a provider key: @ai-sdk/anthropic needs an
-      // apiKey, and the daemon holds the real ones.
-      apiKey: options.token,
-      headers: { "x-caveman-local-token": options.token, "x-cave-routing-mode": options.mode },
+      // The LOCAL token, read from its file by OpenCode's {file:} substitution
+      // (not a copy): @ai-sdk/anthropic needs an apiKey, and the daemon holds
+      // the real keys. The plugin adds the x-caveman-local-token header.
+      apiKey: `{file:${tokenRef()}}`,
+      headers: { "x-cave-routing-mode": options.mode },
     },
     models,
   };
+}
+
+/** `~/.caveman/routerd.token`, or the absolute path under $CAVEMAN_HOME. */
+function tokenRef(): string {
+  return process.env.CAVEMAN_HOME ? join(daemonHome(), "routerd.token") : "~/.caveman/routerd.token";
 }
 
 export type OpencodeResult = { paths: string[]; changed: boolean; notes: string[] };

@@ -9,7 +9,9 @@ test("the profile: top-level keys before any table, a command auth, the local to
   assert.ok(profile.indexOf('model_provider = "caveman"') < firstTable && profile.indexOf('model = "auto"') < firstTable);
   assert.match(profile, /auth = \{ command = "caveman-routerd", args = \["codex-auth"\] \}/);
   assert.match(profile, /wire_api = "responses"/);
-  assert.match(profile, /"x-caveman-local-token" = "t0k"/);
+  // Command auth sends the token as Bearer; it is not copied into the file.
+  assert.doesNotMatch(profile, /t0k|x-caveman-local-token/);
+  assert.match(profile, /http_headers = \{ "x-cave-routing-mode" = "agent" \}/);
   assert.doesNotMatch(profile, /env_key|requires_openai_auth|experimental_bearer_token|\[profiles\./);
   assert.match(profile, /\[\[hooks\.Stop\]\]\n\[\[hooks\.Stop\.hooks\]\]\ntype = "command"\ncommand = "caveman-router hook codex"\nasync = true\n/);
 });

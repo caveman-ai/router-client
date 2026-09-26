@@ -3,7 +3,8 @@
 // loads this file directly, with no access to the npm packages.
 //
 // Only sessions on the `caveman` provider are touched:
-// - chat.headers: the local token and the session id caveman-routerd keys on;
+// - chat.headers: the local token (the proxy requires it; opencode.json holds
+//   no copy) and the session id caveman-routerd keys on;
 // - chat.message: prefetches the routing decision for the ask. EXPERIMENTAL,
 //   off unless CAVEMAN_OPENCODE_SET_MODEL=1: waits up to 2 s for a model from
 //   the daemon and sets it on the user message (inferred from OpenCode's
@@ -20,8 +21,11 @@ const PROVIDER = "caveman";
 const HARNESS = "opencode";
 const CONTROL_PORT = 47822;
 
+// $CAVEMAN_HOME, else ~/.caveman: where caveman-routerd keeps its state.
+const stateDir = () => process.env.CAVEMAN_HOME || join(homedir(), ".caveman");
+
 function token() {
-  try { return readFileSync(join(homedir(), ".caveman", "routerd.token"), "utf8").trim(); } catch { return ""; }
+  try { return readFileSync(join(stateDir(), "routerd.token"), "utf8").trim(); } catch { return ""; }
 }
 
 function send(path, body, timeoutMs) {
@@ -36,7 +40,7 @@ function send(path, body, timeoutMs) {
       if (windows) headers["x-caveman-local-token"] = token();
       const req = request({
         method: "POST", path, headers, agent: false,
-        ...(windows ? { host: "127.0.0.1", port: CONTROL_PORT } : { socketPath: join(homedir(), ".caveman", "routerd.sock") }),
+        ...(windows ? { host: "127.0.0.1", port: CONTROL_PORT } : { socketPath: join(stateDir(), "routerd.sock") }),
       }, (res) => {
         let text = "";
         res.setEncoding("utf8");

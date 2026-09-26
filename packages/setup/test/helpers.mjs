@@ -19,6 +19,7 @@ process.stdin.on("data", (c) => { input += c; });
 process.stdin.on("end", () => {
   const args = process.argv.slice(2);
   fs.appendFileSync(path.join(home, "routerd-calls.jsonl"), JSON.stringify(args) + "\\n");
+  fs.appendFileSync(path.join(home, "routerd-env.jsonl"), JSON.stringify(Object.keys(process.env).filter((k) => /API_KEY/.test(k))) + "\\n");
   if (input) fs.appendFileSync(path.join(home, "routerd-stdin.jsonl"), JSON.stringify({ args, input }) + "\\n");
   if (args[0] === "token") process.stdout.write("${TOKEN}\\n");
   if (args[0] === "status") process.stdout.write(JSON.stringify({ running: true, port: 47821, version: "test", sessions: 0, brain: { ok: true, latency_ms: 3 },
@@ -54,6 +55,9 @@ export function run(env, args, { withDaemon = true, extraEnv = {}, input } = {})
 
 export const calls = (home) => {
   try { return readFileSync(join(home, "routerd-calls.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)); } catch { return []; }
+};
+export const envOf = (home) => {
+  try { return readFileSync(join(home, "routerd-env.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)); } catch { return []; }
 };
 export const stdinOf = (home) => {
   try { return readFileSync(join(home, "routerd-stdin.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)); } catch { return []; }

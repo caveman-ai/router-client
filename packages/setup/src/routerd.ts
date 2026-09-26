@@ -25,7 +25,9 @@ export type RunResult = { code: number; stdout: string; stderr: string };
 
 export function routerd(args: string[], input?: string, timeoutMs = 60_000): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = spawn(ROUTERD, args, { stdio: ["pipe", "pipe", "pipe"] });
+    // Keys reach the daemon on stdin only: none ride along in its environment.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/_API_KEY$/.test(name)));
+    const child = spawn(ROUTERD, args, { stdio: ["pipe", "pipe", "pipe"], env });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill(), timeoutMs);
@@ -68,5 +70,6 @@ export function parseStatus(stdout: string): DaemonStatus {
     const output = positive(item.max_output_tokens) ?? positive(item.max_output) ?? positive(item.output);
     pool.push({ id, ...(context ? { context } : {}), ...(output ? { output } : {}) });
   }
-  return { port: positive(parsed.port) ?? DAEMON_PORT, pool };
+  const port = Number.isInteger(parsed.port) && (parsed.port as number) > 0 && (parsed.port as number) < 65536 ? parsed.port as number : DAEMON_PORT;
+  return { port, pool };
 }

@@ -102,3 +102,26 @@ test("a stuck daemon costs the experimental path at most its 2 s cap", { timeout
     await daemon.close();
   }
 });
+
+test("CAVEMAN_HOME moves the token and the socket for the plugin too", async () => {
+  const saved = process.env.HOME;
+  const state = tempHome();
+  const daemon = await fakeDaemon(state, daemonReplies());
+  process.env.HOME = tempHome();
+  process.env.CAVEMAN_HOME = join(state, ".caveman");
+  try {
+    writeFileSync(join(state, ".caveman", "routerd.token"), "moved-token\n");
+    const { CavemanRouter } = await import(`${PLUGIN}?home=${Date.now()}`);
+    const hooks = await CavemanRouter({ directory: "/proj" });
+    const output = { headers: {} };
+    await hooks["chat.headers"]({ sessionID: "ses_h", model: cavemanModel }, output);
+    assert.equal(output.headers["x-caveman-local-token"], "moved-token");
+    await hooks["chat.message"]({ sessionID: "ses_h", model: cavemanModel, messageID: "m1" }, { message: {}, parts: [{ type: "text", text: "hi" }] });
+    await settle();
+    assert.equal(daemon.seen.length, 1);
+  } finally {
+    delete process.env.CAVEMAN_HOME;
+    process.env.HOME = saved;
+    await daemon.close();
+  }
+});

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { daemonHome } from "@caveman-ai/router-client";
 
@@ -53,20 +53,79 @@ export function readText(path: string): string | undefined {
   }
 }
 
-function atomicWrite(path: string, text: string, mode?: number): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.caveman-router.tmp`;
-  writeFileSync(temp, text, mode === undefined ? undefined : { mode });
-  renameSync(temp, path);
+/** The file a write lands in: a symlinked config (a dotfiles repo) is written
+ * through its link, which stays a link. A dangling link is refused. */
+function writeTarget(path: string): string {
+  let link = false;
+  try { link = lstatSync(path).isSymbolicLink(); } catch { return path; }
+  if (!link) return path;
+  try { return realpathSync(path); } catch { throw new Error(`${path} is a symlink to a missing file; not touching it`); }
+}
+
+/** Temp file + rename, with a unique temp name (concurrent writers never
+ * share one). The file keeps its mode; a new file is 0600, since most of
+ * what setup writes carries the local token. */
+function atomicWrite(path: string, text: string, mode = 0o600): void {
+  const target = writeTarget(path);
+  mkdirSync(dirname(target), { recursive: true });
+  let keep = mode;
+  try { keep = statSync(target).mode & 0o777; } catch { /* new file */ }
+  const temp = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  writeFileSync(temp, text, { mode: keep, flag: "wx" });
+  try {
+    chmodSync(temp, keep); // the umask may have narrowed it
+    renameSync(temp, target);
+  } catch (error) {
+    try { unlinkSync(temp); } catch { /* already gone */ }
+    throw error;
+  }
 }
 
 const stamp = (): string => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 
+/** Backups hold the same token-bearing content: always 0600. */
 function backup(path: string): string {
   let target = `${path}.caveman-backup-${stamp()}`;
   for (let n = 1; existsSync(target); n++) target = `${path}.caveman-backup-${stamp()}-${n}`;
   copyFileSync(path, target);
+  chmodSync(target, 0o600);
   return target;
+}
+
+// ------------------------------------------------------------------ the lock
+
+const LOCK_WAIT_MS = 30_000;
+
+function lockHolderAlive(lock: string): boolean {
+  const pid = Number(readText(lock)?.trim());
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** One setup or teardown at a time: an exclusive lock file holding our pid.
+ * A second run waits for it; a lock whose process is gone is taken over. */
+export async function withSetupLock<T>(fn: () => Promise<T>): Promise<T> {
+  const lock = join(daemonHome(), "router-setup.lock");
+  mkdirSync(daemonHome(), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const fd = openSync(lock, "wx", 0o600);
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!lockHolderAlive(lock)) { try { unlinkSync(lock); } catch { /* raced */ } continue; }
+      if (Date.now() > deadline) throw new Error(`another caveman-router setup or teardown holds ${lock}; try again when it finishes`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try { unlinkSync(lock); } catch { /* removed by hand */ }
+  }
 }
 
 /** The record for `path`, created on first touch. A file edited outside setup

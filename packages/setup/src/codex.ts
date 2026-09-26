@@ -35,7 +35,7 @@ export const CODEX_HOOKS: Array<{ event: string; matcher?: string; timeout?: num
   { event: "Interrupt", async: true },
 ];
 
-export function codexProfile(options: { port: number; token: string; mode: string }): string {
+export function codexProfile(options: { port: number; mode: string }): string {
   const lines = [
     BEGIN,
     `# Use it with: codex --profile ${CODEX_PROFILE}`,
@@ -48,9 +48,10 @@ export function codexProfile(options: { port: number; token: string; mode: strin
     `wire_api = "responses"`,
     // A command auth provider makes Codex load its model catalog from
     // {base_url}/models, which caveman-routerd serves. The command prints the
-    // local token; no provider key is ever written here.
+    // local token, which Codex sends as a Bearer token: no copy of it, and no
+    // provider key, is written here.
     `auth = { command = ${tomlString(ROUTERD)}, args = ["codex-auth"] }`,
-    `http_headers = { "x-caveman-local-token" = ${tomlString(options.token)}, "x-cave-routing-mode" = ${tomlString(options.mode)} }`,
+    `http_headers = { "x-cave-routing-mode" = ${tomlString(options.mode)} }`,
   ];
   for (const hook of CODEX_HOOKS) {
     lines.push("", `[[hooks.${hook.event}]]`);
@@ -115,7 +116,7 @@ export function clash(text: string): string | undefined {
 
 export type CodexResult = { paths: string[]; changed: boolean; notes: string[] };
 
-export function configureCodex(state: SetupState, options: { port: number; token: string; mode: string }): CodexResult {
+export function configureCodex(state: SetupState, options: { port: number; mode: string }): CodexResult {
   const configPath = join(codexHome(), "config.toml");
   const profilePath = codexProfilePath();
   const problem = clash(readText(configPath) ?? "");

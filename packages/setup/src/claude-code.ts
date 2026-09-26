@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ROUTERD } from "./routerd.js";
 import type { PoolModel } from "./routerd.js";
 import { applyKeys, currentValue, formatJson, userValue, parseJsonObject, readText, recordFor, restoreKeys, restoreManaged, writeManaged } from "./files.js";
 import type { FileRecord, Json, SetupState } from "./files.js";
@@ -83,11 +84,12 @@ export function configureClaudeCode(state: SetupState, options: ClaudeOptions): 
     model: "auto",
   };
   // API-key mode: Claude Code needs a credential to start without a claude.ai
-  // login. It gets the LOCAL token; the Anthropic key stays in the daemon.
-  if (options.claude === "key") desired["env.ANTHROPIC_AUTH_TOKEN"] = options.token;
+  // login. apiKeyHelper hands it the LOCAL token (no second copy in the file);
+  // the Anthropic key stays in the daemon.
+  if (options.claude === "key") desired.apiKeyHelper = `${ROUTERD} token`;
   else {
-    const conflict = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"].find((name) => currentValue(root, `env.${name}`) && !(record.set?.[`env.${name}`]));
-    if (conflict) notes.push(`env.${conflict} is set in ${path} and replaces your claude.ai subscription login`);
+    const conflict = ["env.ANTHROPIC_AUTH_TOKEN", "env.ANTHROPIC_API_KEY", "apiKeyHelper"].find((key) => currentValue(root, key) && !(record.set && key in record.set));
+    if (conflict) notes.push(`${conflict} is set in ${path} and replaces your claude.ai subscription login`);
   }
 
   const others = options.pool.filter((model) => !isClaudeModel(model.id));
@@ -144,7 +146,7 @@ function surgical(current: string, record: FileRecord): string | null {
   // Our header lines go even if the user edited the rest of the header list.
   const headers = currentValue(root, "env.ANTHROPIC_CUSTOM_HEADERS");
   if (typeof headers === "string" && record.set && headers !== record.set["env.ANTHROPIC_CUSTOM_HEADERS"]) {
-    const kept = headerLines(headers).filter((line) => !line.toLowerCase().startsWith(`${TOKEN_HEADER}:`));
+    const kept = headerLines(headers).filter((line) => ![TOKEN_HEADER, MODE_HEADER].includes(headerName(line)));
     (root.env as Json).ANTHROPIC_CUSTOM_HEADERS = kept.join("\n");
     if (kept.length === 0) delete (root.env as Json).ANTHROPIC_CUSTOM_HEADERS;
   }

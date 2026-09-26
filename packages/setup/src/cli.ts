@@ -3,7 +3,7 @@ import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { configureClaudeCode, decodePrevious, isClaudeModel, teardownClaudeCode } from "./claude-code.js";
 import { configureCodex, teardownCodex } from "./codex.js";
-import { loadState, saveState } from "./files.js";
+import { loadState, saveState, withSetupLock } from "./files.js";
 import { configureOpencode, teardownOpencode } from "./opencode.js";
 import { ROUTERD, onPath, parseStatus, routerd, routerdOnPath, waitForHealth } from "./routerd.js";
 import type { PoolModel } from "./routerd.js";
@@ -30,9 +30,8 @@ function flag(name: string): string | undefined {
 }
 const has = (name: string): boolean => rest.includes(`--${name}`);
 
-class Stop extends Error {}
 function fail(message: string): never {
-  throw new Stop(message);
+  throw new Error(message);
 }
 
 function readAll(): Promise<string> {
@@ -202,6 +201,7 @@ async function setup(): Promise<void> {
   const lines: string[] = [];
   const notes: string[] = [];
   const tests: string[] = [];
+  const failed: string[] = [];
   for (const harness of harnesses) {
     try {
       if (harness === "claude-code") {
@@ -210,17 +210,20 @@ async function setup(): Promise<void> {
         notes.push(...result.notes);
         tests.push(`claude -p "which model are you?"`);
       } else if (harness === "codex") {
-        const result = configureCodex(state, { port: status.port, token, mode });
+        const result = configureCodex(state, { port: status.port, mode });
         lines.push(`  codex        ${result.paths.join(", ")}${result.changed ? "" : " (already set up)"}`);
         notes.push(...result.notes);
         if (outside(poolInfo).length === 0) notes.push("codex: every pool model is a Claude subscription model, which Codex cannot use");
         tests.push(`codex exec --profile caveman "which model are you?"`);
       } else {
-        const result = configureOpencode(state, { port: status.port, token, mode, pool: outside(poolInfo) });
+        const result = configureOpencode(state, { port: status.port, mode, pool: outside(poolInfo) });
         lines.push(`  opencode     ${result.paths.join(", ")}${result.changed ? "" : " (already set up)"}`);
         notes.push(...result.notes);
         tests.push(`opencode run -m caveman/auto "which model are you?"`);
       }
+    } catch (error) {
+      // One harness's config problem never strands the others half-done.
+      failed.push(`${harness}: ${(error as Error).message}`);
     } finally {
       saveState(state);
     }
@@ -238,7 +241,9 @@ async function setup(): Promise<void> {
   for (const line of lines) console.log(line);
   for (const note of notes) console.log(`note: ${note}`);
   console.log("backups: <file>.caveman-backup-<time> beside each edited file; undo: caveman-router teardown");
+  for (const failure of failed) console.error(`not configured: ${failure}`);
   console.log(`try: ${tests[0] ?? `${ROUTERD} status --json`}`);
+  if (failed.length > 0) process.exitCode = 1;
 }
 
 async function teardown(): Promise<void> {
@@ -276,8 +281,8 @@ const USAGE = `usage:
 
 try {
   switch (sub) {
-    case "setup": await setup(); break;
-    case "teardown": await teardown(); break;
+    case "setup": await withSetupLock(setup); break;
+    case "teardown": await withSetupLock(teardown); break;
     case "hook":
       // Hooks never fail loudly: each runner catches everything and exits 0.
       if (rest[0] === "claude-code") await (await import("@caveman-ai/router-claude-code")).spawnHook();
@@ -294,7 +299,8 @@ try {
       process.exitCode = 1;
   }
 } catch (error) {
-  if (!(error instanceof Stop)) throw error;
-  console.error(error.message);
+  // A CLI answer, not a stack trace: a refusal, a lock held too long or an
+  // unreadable file all end the same way.
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { daemonReplies, fakeDaemon } from "../../client/test/fake-daemon.mjs";
-import { TOKEN, box, calls, run, snapshot, stdinOf } from "./helpers.mjs";
+import { TOKEN, box, calls, envOf, run, snapshot, stdinOf } from "./helpers.mjs";
 
 const OPENAI_KEY = "sk-test-NEVER-IN-A-HARNESS-FILE-4242";
 const ANTHROPIC_KEY = "sk-ant-test-NEVER-IN-A-HARNESS-FILE-4343";
@@ -94,7 +94,7 @@ test("setup configures all three harnesses, is idempotent, and teardown restores
     assert.match(profile, /^# >>> caveman-router/);
     assert.match(profile, /\nmodel_provider = "caveman"\nmodel = "auto"\n/);
     assert.match(profile, /\[model_providers\.caveman\]\nname = "Caveman \(local router\)"\nbase_url = "http:\/\/127\.0\.0\.1:47821\/v1"\nwire_api = "responses"\nauth = \{ command = "caveman-routerd", args = \["codex-auth"\] \}\n/);
-    assert.match(profile, new RegExp(`http_headers = \\{ "x-caveman-local-token" = "${TOKEN}", "x-cave-routing-mode" = "agent" \\}`));
+    assert.ok(!profile.includes(TOKEN), "the Codex profile holds no token copy");
     assert.match(profile, /\[\[hooks\.PreToolUse\]\]\nmatcher = "spawn_agent"\n\[\[hooks\.PreToolUse\.hooks\]\]\ntype = "command"\ncommand = "caveman-router hook codex"\ntimeout = 10\n/);
     for (const event of ["SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStop", "Stop", "Interrupt"]) assert.match(profile, new RegExp(`\\[\\[hooks\\.${event}\\]\\]`));
 
@@ -104,7 +104,8 @@ test("setup configures all three harnesses, is idempotent, and teardown restores
     assert.deepEqual(opencode.provider.mine, { npm: "@ai-sdk/openai-compatible", options: { baseURL: "http://x" } });
     const caveman = opencode.provider.caveman;
     assert.equal(caveman.npm, "@ai-sdk/anthropic");
-    assert.deepEqual(caveman.options, { baseURL: "http://127.0.0.1:47821/v1", apiKey: TOKEN, headers: { "x-caveman-local-token": TOKEN, "x-cave-routing-mode": "agent" } });
+    // The token is read from its file by OpenCode, and the plugin adds the header.
+    assert.deepEqual(caveman.options, { baseURL: "http://127.0.0.1:47821/v1", apiKey: "{file:~/.caveman/routerd.token}", headers: { "x-cave-routing-mode": "agent" } });
     // A Claude subscription does not reach OpenCode: only the OpenAI models.
     assert.deepEqual(Object.keys(caveman.models), ["auto", "openai/gpt-6-astra", "openai/gpt-5.6-sol"]);
     assert.deepEqual(caveman.models.auto.limit, { context: 272000, output: 64000 });
@@ -180,7 +181,9 @@ test("--claude key: Claude Code gets the LOCAL token, the Anthropic key only rea
     const out = await run(env, ["setup", "--yes", "--harness", "claude-code,opencode", "--preset", "cheap", "--claude", "key"], { extraEnv: { ANTHROPIC_API_KEY: ANTHROPIC_KEY } });
     assert.equal(out.code, 0, out.stderr);
     const settings = JSON.parse(read(env, ".claude", "settings.json"));
-    assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, TOKEN);
+    assert.equal(settings.apiKeyHelper, "caveman-routerd token", "key mode reads the local token through apiKeyHelper");
+    assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
+    assert.equal(JSON.stringify(settings).split(TOKEN).length - 1, 1, "one token copy: the custom header the proxy requires");
     assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined, "an all-Claude pool needs no window override");
     assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
     assert.deepEqual(stdinOf(env.home), [{ args: ["keys", "set", "anthropic"], input: ANTHROPIC_KEY }]);
@@ -190,9 +193,9 @@ test("--claude key: Claude Code gets the LOCAL token, the Anthropic key only rea
     for (const [path, text] of Object.entries(snapshot(env.home))) {
       if (!path.startsWith("routerd-")) assert.ok(!text.includes(ANTHROPIC_KEY), `key leaked into ${path}`);
     }
-    // Switching back to the subscription takes the token credential out again.
+    // Switching back to the subscription takes the credential helper out again.
     assert.equal((await run(env, ["setup", "--yes", "--harness", "claude-code", "--preset", "cheap", "--claude", "subscription"])).code, 0);
-    assert.equal(JSON.parse(read(env, ".claude", "settings.json")).env.ANTHROPIC_AUTH_TOKEN, undefined);
+    assert.equal(JSON.parse(read(env, ".claude", "settings.json")).apiKeyHelper, undefined);
     // Files setup created are removed by teardown.
     assert.equal((await run(env, ["teardown"])).code, 0);
     assert.equal(existsSync(join(env.home, ".claude", "settings.json")), false);
@@ -316,6 +319,112 @@ test("a statusline or header the user changed after setup is what a re-run wraps
     assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, "X-Team: red");
     assert.equal(after.env.ANTHROPIC_BASE_URL, undefined);
     assert.equal(after.model, undefined);
+  } finally {
+    await daemon.close();
+  }
+});
+
+const modeOf = (path) => (statSync(path).mode & 0o777).toString(8);
+
+test("file modes: an existing file keeps its mode, new files and backups are 0600", { timeout: 60_000 }, async () => {
+  const env = box();
+  seed(env);
+  const settingsPath = join(env.home, ".claude", "settings.json");
+  chmodSync(settingsPath, 0o600);
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  try {
+    assert.equal((await run(env, SETUP, { extraEnv: { OPENAI_API_KEY: OPENAI_KEY } })).code, 0);
+    assert.equal(modeOf(settingsPath), "600", "a 0600 settings.json stays 0600");
+    for (const name of backups(join(env.home, ".claude"))) assert.equal(modeOf(join(env.home, ".claude", name)), "600", name);
+    assert.equal(modeOf(join(env.home, ".codex", "caveman.config.toml")), "600");
+    assert.equal(modeOf(join(env.home, ".config", "opencode", "plugins", "caveman-router.js")), "600");
+    assert.equal(modeOf(join(env.home, ".caveman", "router-setup.json")), "600");
+    assert.equal((await run(env, ["teardown", "--harness", "claude-code"])).code, 0);
+    assert.equal(modeOf(settingsPath), "600", "and after teardown");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a symlinked config is written through the link, which stays a link", { timeout: 60_000 }, async () => {
+  const env = box();
+  mkdirSync(join(env.home, "dotfiles"));
+  const real = join(env.home, "dotfiles", "opencode.json");
+  writeFileSync(real, USER_OPENCODE);
+  const link = join(env.home, ".config", "opencode", "opencode.json");
+  symlinkSync(real, link);
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  try {
+    assert.equal((await run(env, ["setup", "--yes", "--harness", "opencode", "--openai", "key", "--preset", "cheap"], { extraEnv: { OPENAI_API_KEY: OPENAI_KEY } })).code, 0);
+    assert.ok(lstatSync(link).isSymbolicLink());
+    assert.ok(JSON.parse(readFileSync(real, "utf8")).provider.caveman);
+    assert.equal((await run(env, ["teardown", "--harness", "opencode"])).code, 0);
+    assert.ok(lstatSync(link).isSymbolicLink());
+    assert.equal(readFileSync(real, "utf8"), USER_OPENCODE);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("concurrent setups take turns on a lock; teardown still restores the original", { timeout: 120_000 }, async () => {
+  const ORIG = JSON.stringify({ model: "opus", env: { FOO: "1" } }, null, 2) + "\n";
+  for (let i = 0; i < 4; i++) {
+    const env = box();
+    const path = join(env.home, ".claude", "settings.json");
+    writeFileSync(path, ORIG);
+    const daemon = await fakeDaemon(env.home, daemonReplies());
+    try {
+      const args = ["setup", "--yes", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"];
+      const [a, b] = await Promise.all([run(env, args), run(env, [...args, "--mode", "balanced"])]);
+      assert.deepEqual([a.code, b.code], [0, 0], a.stderr + b.stderr);
+      assert.equal((await run(env, ["teardown", "--harness", "claude-code"])).code, 0);
+      assert.equal(readFileSync(path, "utf8"), ORIG);
+      assert.equal(existsSync(join(env.home, ".caveman", "router-setup.lock")), false);
+    } finally {
+      await daemon.close();
+    }
+  }
+});
+
+test("teardown after a header edit removes both of setup's header lines", { timeout: 60_000 }, async () => {
+  const env = box();
+  const path = join(env.home, ".claude", "settings.json");
+  writeFileSync(path, JSON.stringify({ env: { ANTHROPIC_CUSTOM_HEADERS: "X-Team: blue" } }));
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  try {
+    await run(env, ["setup", "--yes", "--harness", "claude-code", "--claude", "subscription", "--preset", "cheap"]);
+    const edited = JSON.parse(readFileSync(path, "utf8"));
+    edited.env.ANTHROPIC_CUSTOM_HEADERS += "\nX-Extra: 1";
+    writeFileSync(path, JSON.stringify(edited, null, 2));
+    await run(env, ["teardown", "--harness", "claude-code"]);
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).env.ANTHROPIC_CUSTOM_HEADERS, "X-Team: blue\nX-Extra: 1");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("one harness failing does not stop the others; the summary prints and setup exits 1", { timeout: 60_000 }, async () => {
+  const env = box();
+  writeFileSync(join(env.home, ".claude", "settings.json"), '{ // comment\n "model": "x" }');
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  try {
+    const out = await run(env, ["setup", "--yes", "--harness", "claude-code,codex,opencode", "--claude", "subscription", "--openai", "key", "--preset", "cheap"], { extraEnv: { OPENAI_API_KEY: OPENAI_KEY } });
+    assert.equal(out.code, 1);
+    assert.match(out.stdout + out.stderr, /claude-code.*not a JSON object/);
+    assert.ok(existsSync(join(env.home, ".codex", "caveman.config.toml")), "codex still set up");
+    assert.ok(existsSync(join(env.home, ".config", "opencode", "opencode.json")), "opencode still set up");
+    assert.match(out.stdout, /caveman-routerd +running/);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("caveman-routerd never sees the provider keys in its environment", { timeout: 60_000 }, async () => {
+  const env = box();
+  const daemon = await fakeDaemon(env.home, daemonReplies());
+  try {
+    assert.equal((await run(env, ["setup", "--yes", "--harness", "opencode", "--openai", "key", "--preset", "cheap"], { extraEnv: { OPENAI_API_KEY: OPENAI_KEY, ANTHROPIC_API_KEY: ANTHROPIC_KEY } })).code, 0);
+    assert.deepEqual(envOf(env.home).flat(), []);
   } finally {
     await daemon.close();
   }
