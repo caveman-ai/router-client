@@ -54,7 +54,7 @@ test("setup defaults to subscription mode: base url + our custom header, no auth
   assert.match(first.stdout, /restart Claude Code/);
   const after = settingsOf(home);
   assert.equal(after.env.ANTHROPIC_BASE_URL, "http://r.test");
-  assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, "X-Mine: 1\nx-cave-api-key: crk_x", "ours appended, theirs kept");
+  assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, "X-Mine: 1\nx-cave-api-key: crk_x\nx-cave-routing-mode: agent", "ours appended, theirs kept");
   assert.equal(after.env.ANTHROPIC_AUTH_TOKEN, undefined, "the claude.ai login is left alone");
   assert.equal(after.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(after.env.FOO, "bar", "an unrelated env var survives");
@@ -70,7 +70,7 @@ test("setup defaults to subscription mode: base url + our custom header, no auth
   assert.match(status.stdout, /claude code subscription/);
 });
 
-test("--api-key writes the auth token and no custom header", async () => {
+test("--api-key writes the auth token and only the routing-mode header", async () => {
   const home = box();
   writeFileSync(join(home, ".claude", "settings.json"), "{}");
   const out = await cli(home, ["setup", "claude-code", "--url", "http://r.test", "--key", "crk_x", "--api-key"]);
@@ -78,7 +78,7 @@ test("--api-key writes the auth token and no custom header", async () => {
   const after = settingsOf(home);
   assert.equal(after.env.ANTHROPIC_BASE_URL, "http://r.test");
   assert.equal(after.env.ANTHROPIC_AUTH_TOKEN, "crk_x");
-  assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, undefined);
+  assert.equal(after.env.ANTHROPIC_CUSTOM_HEADERS, "x-cave-routing-mode: agent");
   assert.match((await cli(home, ["status"])).stdout, /claude code api-key/);
 });
 
@@ -251,4 +251,27 @@ test("teardown keeps a user's own Anthropic token", async () => {
   await cli(home, ["teardown", "claude-code"]);
   assert.equal(settingsOf(home).env.ANTHROPIC_AUTH_TOKEN, "sk-ant-mine");
   assert.equal(settingsOf(home).env.ANTHROPIC_BASE_URL, undefined);
+});
+
+test("the agent routing-mode header follows auto, merges and tears down cleanly", async () => {
+  const home = box();
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_CUSTOM_HEADERS: "X-Mine: 1\nX-Other: 2" } }));
+  await cli(home, ["setup", "claude-code", "--key", "crk_x", "--model", "auto:anthropic/claude-sonnet-5,anthropic/claude-haiku-5"]);
+  assert.equal(settingsOf(home).env.ANTHROPIC_CUSTOM_HEADERS, "X-Mine: 1\nX-Other: 2\nx-cave-api-key: crk_x\nx-cave-routing-mode: agent");
+
+  // A fixed model is not routed: re-running setup drops only our mode line.
+  await cli(home, ["setup", "claude-code", "--key", "crk_x", "--model", "google/gemini-3.7-flash"]);
+  assert.equal(settingsOf(home).env.ANTHROPIC_CUSTOM_HEADERS, "X-Mine: 1\nX-Other: 2\nx-cave-api-key: crk_x");
+
+  await cli(home, ["setup", "claude-code", "--key", "crk_x"]);
+  await cli(home, ["teardown", "claude-code"]);
+  assert.equal(settingsOf(home).env.ANTHROPIC_CUSTOM_HEADERS, "X-Mine: 1\nX-Other: 2");
+
+  // A routing mode the user chose is theirs: setup adds none, teardown keeps it.
+  const own = box();
+  writeFileSync(join(own, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_CUSTOM_HEADERS: "x-cave-routing-mode: cost-efficient" } }));
+  await cli(own, ["setup", "claude-code", "--key", "crk_x", "--api-key"]);
+  assert.equal(settingsOf(own).env.ANTHROPIC_CUSTOM_HEADERS, "x-cave-routing-mode: cost-efficient");
+  await cli(own, ["teardown", "claude-code"]);
+  assert.deepEqual(settingsOf(own).env, { ANTHROPIC_CUSTOM_HEADERS: "x-cave-routing-mode: cost-efficient" });
 });

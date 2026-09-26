@@ -44,6 +44,7 @@ hook is installed, and the measured p95 of its own answer time.
 | `ROUTER_OFF=1` | Route nothing for this session. |
 | `ROUTER_VETO=1` | Let the hook deny a spawn the router says is cheaper inline (at most once per session). Off by default: the hook rewrites, it does not block. |
 | `ROUTER_BUDGET_MS` | Lower the hook's 2500 ms wall-clock budget. |
+| `ROUTER_AGENT_POOL` | Comma-separated Claude families the router may pick a subagent from (`opus,sonnet`). It narrows the newest Haiku, Sonnet and Opus by family name; the child policy stays on. A list naming none of them is ignored (the reply's reason is `agent_policy_default_pool`). Unset, all three. |
 | `CAVEMAN_ROUTER_HOME` | State directory. Default `~/.config/caveman-router`. |
 
 Env wins, then `~/.config/caveman-router/config.json` (written by
@@ -68,6 +69,23 @@ r = client.chat.completions.create(
 print(r.model)
 ```
 
+## Agent routing mode
+
+Coding agents are routed as a session, not as isolated prompts. Ask for it with
+routing mode `agent` (alongside `balanced` and `cost-efficient`): as `mode` on
+`POST /v1/route`, under `routing` on a proxy request body, or with the header
+`x-cave-routing-mode: agent`. Optionally describe the repository with a `repo`
+object — `routing.repo` in a body, or `x-cave-repo-profile: <compact JSON, at
+most 1 KiB>` as a header:
+
+```json
+{"files": 1240, "bytes": 18400000, "languages": ["go", "typescript"], "test_files": 310, "touched_files": 3, "touched_dirs": 2}
+```
+
+Every field is optional; `languages` holds at most 16 short lowercase names.
+`setup claude-code` sends the mode header for you; the spawn hook sends `repo`
+on every subagent decision.
+
 The Claude Code hook is different: with `setup claude-code` it keeps your
 claude.ai login, so Claude turns stay on your Pro/Max subscription and the
 router chooses among Claude models unless you put others in your pool. See
@@ -81,12 +99,17 @@ On every subagent spawn the hook sends the router:
 - the model your harness proposed, and whether it came from the agent
   definition's frontmatter;
 - the parent session's token counts (context, cache reads), its turn number, its
-  model, and how many children are already running.
+  model, and how many children are already running;
+- a repository profile: the number of committed files, their total size in
+  bytes, the top languages by file count (names only), how many files look like
+  tests, and how many distinct files and directories the session has edited.
+  It is computed locally from `git ls-tree` and the transcript; no file path and
+  no file content is sent.
 
 On `SubagentStop` it sends the child's measured token usage, turn count and tool
 call count against the decision id.
 
-It does not read or send your files, tool outputs or transcript text — only the prompt the parent model wrote for the subagent, which may itself quote code.
+It does not read or send your file contents, file paths, tool outputs or transcript text — only the prompt the parent model wrote for the subagent, which may itself quote code.
 
 **Data notice.** Prompts and tool inputs sent to the router are retained, after
 automatic redaction of secrets and personal data, and are used to improve

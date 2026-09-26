@@ -50,5 +50,11 @@ anything. `reason` is one of `no_api_key`, `no_budget`, `timeout`, `network`,
 `x-cave-budget-ms` — the router shortens its classifier call to fit — and aborts
 the request at the same instant.
 
+For coding agents, pass routing mode `agent` and an optional repository profile:
+`route({ ..., mode: "agent", repo: { files: 1240, languages: ["go"] } })`, or
+`repo` on `delegate(...)`. A delegate answer may carry an advisory
+`orchestrator` (`{ model, effort, reason, applied: false }`) — a recommendation
+for the parent, never applied by the router.
+
 The wire types (`RouteResponse`, `TaskResponse`, `DelegateResponse`, …) are
 exported from the package root and mirror the server structs field for field.

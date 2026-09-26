@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -118,6 +118,9 @@ test("a delegate answer rewrites the model and shows the human one line", async 
     assert.equal(sent.task.model_declared, false);
     assert.equal(sent.harness.kind, "claude-code");
     assert.equal(sent.veto, false);
+    // Not a git repo and no edits: no repo field; no pool: the router's default.
+    assert.equal(sent.repo, undefined);
+    assert.equal(sent.models, undefined);
     // The decision is filed under the tool_use_id SubagentStop will resolve.
     const state = JSON.parse(readFileSync(join(box.home, "state", "spawn", "sess-1.json"), "utf8"));
     assert.deepEqual(state.decisions.toolu_01, { decision_id: "dlg_1", model: "anthropic/claude-sonnet-5" });
@@ -232,5 +235,97 @@ test("a transcript outside ~/.claude/projects is never opened", async () => {
     assert.equal(router.seen.length, 0);
   } finally {
     router.close();
+  }
+});
+
+// A fake git on PATH: fixed `rev-parse` and `ls-tree -z` answers, so the body
+// assertions do not depend on the machine's git or its config.
+function fakeGit(box, script) {
+  const bin = join(box.home, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "git"), `#!/bin/sh\n${script}\n`);
+  chmodSync(join(bin, "git"), 0o755);
+  return `${bin}:${process.env.PATH}`;
+}
+
+const REPO_GIT = `case "$*" in
+  *rev-parse*) echo ${"a".repeat(40)} ;;
+  *ls-tree*) printf '100644 blob ${"b".repeat(40)}      11\\tsrc/a.ts\\000100644 blob ${"c".repeat(40)}      11\\tsrc/a.test.ts\\000' ;;
+  *) exit 1 ;;
+esac`;
+
+// A session cwd and a parent transcript that edited two files in one directory.
+function repoSession(box) {
+  const base = preToolUse(box); // writes the plain parent transcript first
+  const work = join(box.home, "work");
+  mkdirSync(work, { recursive: true });
+  const edit = (id, file_path) => ({ type: "tool_use", id, name: "Edit", input: { file_path, old_string: "a", new_string: "b" } });
+  const path = join(box.project, "session.jsonl");
+  writeFileSync(path, PARENT_LINES + JSON.stringify({
+    type: "assistant",
+    message: { model: "claude-opus-5-20260101", content: [edit("e1", join(work, "src", "a.ts")), edit("e2", join(work, "src", "a.test.ts"))] },
+  }) + "\n");
+  return { ...base, cwd: work, transcript_path: path };
+}
+
+test("the delegate call carries the repo profile; ROUTER_AGENT_POOL becomes models", async () => {
+  const box = sandbox();
+  const router = await fakeRouter(answer(delegateReply));
+  try {
+    const env = { ROUTER_URL: router.url, ROUTER_API_KEY: "crk_dev", PATH: fakeGit(box, REPO_GIT) };
+    await runHook(box, repoSession(box), env);
+    assert.deepEqual(router.seen[0].body.repo, {
+      files: 2, bytes: 22, languages: ["typescript"], test_files: 1, touched_files: 2, touched_dirs: 1,
+    });
+    assert.equal(router.seen[0].body.models, undefined, "no pool by default");
+    await runHook(box, repoSession(box), { ...env, ROUTER_AGENT_POOL: " opus, sonnet ,,haiku " });
+    assert.deepEqual(router.seen[1].body.models, ["opus", "sonnet", "haiku"]);
+  } finally {
+    router.close();
+  }
+});
+
+test("a hanging git costs the repo profile, not the spawn", async () => {
+  const box = sandbox();
+  const payload = repoSession(box);
+  const PATH = fakeGit(box, "exec sleep 5");
+  const router = await fakeRouter(answer(delegateReply));
+  try {
+    const started = Date.now();
+    const { stdout } = await runHook(box, payload, { ROUTER_URL: router.url, ROUTER_API_KEY: "crk_dev", PATH });
+    assert.ok(Date.now() - started < 2500, `inside the hook budget (${Date.now() - started} ms)`);
+    assert.match(stdout, /"model":"sonnet"/, "the decision still applies");
+    // The git half is gone; the transcript half needs no git and stays.
+    assert.deepEqual(router.seen[0].body.repo, { touched_files: 2, touched_dirs: 1 });
+  } finally {
+    router.close();
+  }
+});
+
+test("an orchestrator recommendation rides the developer line only", async () => {
+  const box = sandbox();
+  const orchestrator = { model: "anthropic/claude-sonnet-5", effort: "medium", reason: "ranked", applied: false };
+  const router = await fakeRouter(answer({ ...delegateReply, orchestrator }));
+  try {
+    const { stdout } = await runHook(box, preToolUse(box), { ROUTER_URL: router.url, ROUTER_API_KEY: "crk_dev" });
+    const out = JSON.parse(stdout);
+    assert.equal(out.systemMessage, `${delegateReply.line} · orchestrator: sonnet recommended · caveman-router-hook off`);
+    assert.equal(out.hookSpecificOutput.additionalContext, undefined);
+  } finally {
+    router.close();
+  }
+  // Kept on the parent: no clause. No line: no clause either.
+  for (const reply of [
+    { ...delegateReply, orchestrator: { ...orchestrator, reason: "parent_kept" } },
+    { ...delegateReply, decision: "inline", line: "", orchestrator },
+  ]) {
+    const quiet = sandbox();
+    const kept = await fakeRouter(answer(reply));
+    try {
+      const { stdout } = await runHook(quiet, preToolUse(quiet), { ROUTER_URL: kept.url, ROUTER_API_KEY: "crk_dev" });
+      assert.doesNotMatch(stdout, /orchestrator/);
+    } finally {
+      kept.close();
+    }
   }
 });
