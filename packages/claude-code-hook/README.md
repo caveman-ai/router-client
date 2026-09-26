@@ -41,7 +41,10 @@ per token against the key and disables claude.ai connectors.
 with `--statusline`, and only if you do not already have one — `statusLine`)
 into `~/.claude/settings.json` (`--project` for `.claude/settings.json`). An
 existing custom header of yours is kept; ours is appended on its own line and
-never duplicated. It also installs the spawn hooks so subagents route too.
+never duplicated. With an `auto` model it also appends
+`x-cave-routing-mode: agent`, so the router treats the main loop as an agent
+session (a routing-mode header you already set wins). It also installs the spawn
+hooks so subagents route too.
 `teardown claude-code` removes exactly those, including only our header line.
 Restart Claude Code after either. `caveman-router-hook status` prints the mode.
 
@@ -105,6 +108,18 @@ model needs (context tokens, cache reads, turn, children already running), asks
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"…":"…","model":"sonnet"}},"systemMessage":"Caveman · subagent on Sonnet 5 instead of Opus 5 · est. $0.84 vs $1.72 · code search"}
 ```
+
+The request also carries a `repo` profile — committed file count, byte total,
+top languages, test-file count, distinct files and directories edited in the
+session; counts and names only. It comes from `git ls-tree -r -l HEAD`, is
+cached per working directory and commit, and is dropped if git is missing, not
+a repository, or slower than 300 ms. `models` is sent only when
+`ROUTER_AGENT_POOL` is set.
+
+When the router also advises a different model for the parent session, the line
+ends with `orchestrator: opus recommended`. It is advice: Claude Code cannot
+switch a running session's model, and the hook does not try. The same holds for
+the child's recommended effort — the Agent tool has no effort setting.
 
 `systemMessage` reaches you, never the model. A spawn the router leaves alone
 prints nothing. A model written into the agent definition's frontmatter is
