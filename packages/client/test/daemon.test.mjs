@@ -35,7 +35,7 @@ test("a missing socket fails open immediately", async () => {
     const started = Date.now();
     assert.equal(await daemonHealthy(), false);
     assert.equal(await postEvent("codex", "s", "stop", {}), false);
-    assert.equal(await spawnDecision("codex", "s", { tool: "spawn_agent", tool_input: {}, parent: {} }), undefined);
+    assert.equal(await spawnDecision("codex", "s", { tool: "spawn_agent", tool_input: {}, parent: {} }), "absent", "no daemon is told apart from a failing one");
     assert.ok(Date.now() - started < 200, "no waiting on a daemon that is not there");
   } finally {
     restore();

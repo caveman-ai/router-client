@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -192,4 +193,85 @@ test("statuslineChain with a stuck daemon still renders within ~20 ms of the com
     process.env.HOME = previous;
     await daemon.close();
   }
+});
+
+// A hosted router that always delegates to haiku, and a transcript the
+// hosted path can read, so any hosted call shows up.
+async function hostedRouter() {
+  const calls = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      calls.push(req.url);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ decision: "delegate", delegate: { model: "anthropic/claude-haiku-5" }, line: "hosted", decision_id: "h1" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { calls, url: `http://127.0.0.1:${server.address().port}`, close: () => { server.closeAllConnections(); server.close(); } };
+}
+
+function withTranscript(home) {
+  const project = join(home, ".claude", "projects", "p");
+  mkdirSync(project, { recursive: true });
+  const path = join(project, "t.jsonl");
+  writeFileSync(path, JSON.stringify({ type: "user", message: { content: "hi" } }) + "\n"
+    + JSON.stringify({ type: "assistant", message: { model: "claude-opus-5-5", usage: { input_tokens: 1000 }, content: [] } }) + "\n");
+  return { ...agentEvent(home), transcript_path: path };
+}
+
+test("the hosted fallback runs only when no daemon is there, and never when Claude Code is pointed at the daemon", { timeout: 30_000 }, async () => {
+  const hosted = await hostedRouter();
+  const env = { ROUTER_URL: hosted.url, ROUTER_API_KEY: "rk_test" };
+  try {
+    for (const [name, handler, options, expectHosted, extra] of [
+      ["daemon 503", () => ({ status: 503, body: { error: "down" } }), {}, 0, {}],
+      ["daemon 204", () => ({ status: 204 }), {}, 0, {}],
+      ["daemon stuck", undefined, { hang: true }, 0, {}],
+      ["no daemon", null, {}, 1, {}],
+      ["no daemon, base URL at the daemon", null, {}, 0, { ANTHROPIC_BASE_URL: "http://127.0.0.1:47821" }],
+    ]) {
+      const home = tempHome();
+      const daemon = handler === null ? undefined : await fakeDaemon(home, handler, options);
+      hosted.calls.length = 0;
+      try {
+        const out = await hook(home, withTranscript(home), { ...env, ...extra });
+        assert.equal(out.code, 0);
+        assert.equal(hosted.calls.length, expectHosted, `${name}: hosted calls`);
+        if (!expectHosted) assert.equal(out.stdout, "", `${name}: spawn left alone`);
+      } finally { await daemon?.close(); }
+    }
+  } finally { hosted.close(); }
+});
+
+test("the base URL in settings.json counts too", { timeout: 30_000 }, async () => {
+  const hosted = await hostedRouter();
+  const home = tempHome();
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://localhost:47821" } }));
+  try {
+    await hook(home, withTranscript(home), { ROUTER_URL: hosted.url, ROUTER_API_KEY: "rk_test" });
+    assert.equal(hosted.calls.length, 0);
+  } finally { hosted.close(); }
+});
+
+test("an inherit answer drops model from the spawn instead of writing \"inherit\"", async () => {
+  const home = tempHome();
+  const daemon = await fakeDaemon(home, daemonReplies({ model: "inherit", effort: null, line: null, decision_id: "d" }));
+  try {
+    const reply = JSON.parse((await hook(home, agentEvent(home))).stdout);
+    assert.deepEqual(reply.hookSpecificOutput.updatedInput, { prompt: "scan", description: "scan", subagent_type: "explore" });
+  } finally { await daemon.close(); }
+});
+
+test("statuslineChain: a previous command killed by a signal is a failure", async () => {
+  const home = tempHome();
+  const out = await new Promise((resolve) => {
+    const child = execFile(process.execPath, ["--input-type=module", "-e",
+      `const { statuslineChain } = await import(${JSON.stringify(INDEX)}); process.exitCode = await statuslineChain("{}", "kill -9 $$");`],
+      { env: { PATH: process.env.PATH, HOME: home } }, (error) => resolve({ code: error?.code ?? 0 }));
+    child.stdin.end();
+  });
+  assert.notEqual(out.code, 0);
 });

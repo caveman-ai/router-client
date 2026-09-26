@@ -31,7 +31,9 @@ export function localToken(): string {
   try { return readFileSync(join(daemonHome(), "routerd.token"), "utf8").trim(); } catch { return ""; }
 }
 
-export type DaemonReply = { status: number; body: unknown };
+/** `absent`: nothing is listening (no socket, connection refused), as
+ * opposed to a daemon that is there and failed or was slow. */
+export type DaemonReply = { status: number; body: unknown; absent?: true };
 
 /** One request with a hard wall-clock cap: the timer destroys the socket, so a
  * daemon that accepts and never answers costs exactly `timeoutMs`. */
@@ -72,7 +74,9 @@ export function daemonRequest(method: "GET" | "POST", path: string, body: unknow
       return;
     }
     const timer = setTimeout(() => { req.destroy(); finish(undefined); }, timeoutMs);
-    req.on("error", () => finish(undefined));
+    req.on("error", (error: NodeJS.ErrnoException) => {
+      finish(error.code === "ENOENT" || error.code === "ECONNREFUSED" ? { status: 0, body: undefined, absent: true } : undefined);
+    });
     req.end(payload);
   });
 }
@@ -99,10 +103,12 @@ export type SpawnDecision = { model: string | null; effort: string | null; line:
 
 const str = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
 
-/** `undefined` means the daemon did not answer (the caller may fall back);
- * a decision with every field null means it answered "leave it". */
-export async function spawnDecision(harness: DaemonHarness, sessionId: string, spawn: SpawnHook, timeoutMs = SPAWN_TIMEOUT_MS): Promise<SpawnDecision | undefined> {
+/** `"absent"`: no daemon is listening (the caller may fall back elsewhere).
+ * `undefined`: the daemon is there but failed or was slow (leave the spawn).
+ * A decision with every field null: the daemon answered "leave it". */
+export async function spawnDecision(harness: DaemonHarness, sessionId: string, spawn: SpawnHook, timeoutMs = SPAWN_TIMEOUT_MS): Promise<SpawnDecision | "absent" | undefined> {
   const reply = await daemonRequest("POST", "/hook/spawn", { harness, session_id: sessionId, ...spawn }, timeoutMs);
+  if (reply?.absent) return "absent";
   if (!ok(reply) || !reply!.body || typeof reply!.body !== "object") return undefined;
   const body = reply!.body as Record<string, unknown>;
   return { model: str(body.model), effort: str(body.effort), line: str(body.line), decision_id: str(body.decision_id) };

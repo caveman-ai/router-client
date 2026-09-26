@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { constants as osConstants } from "node:os";
 import { DAEMON_PORT, daemonHealthy, postEvent, postPrompt, spawnDecision } from "@caveman-ai/router-client";
 import { statuslineHook } from "./claude-code.js";
+import { readSettings, settingsPath } from "./install.js";
 import { repoProfile } from "./repo-profile.js";
 
 // The caveman-routerd side of the Claude Code hook. The daemon is the proxy
@@ -10,8 +12,9 @@ import { repoProfile } from "./repo-profile.js";
 
 const HARNESS = "claude-code";
 const PROMPT_EXCERPT_CHARS = 500;
-// Claude Code's Agent tool takes a family alias, never a model id.
-const ALIASES = new Set(["opus", "sonnet", "haiku", "fable", "inherit"]);
+// Claude Code's Agent tool takes a family alias, never a model id. "inherit"
+// is not written: inheriting means leaving `model` out.
+const ALIASES = new Set(["opus", "sonnet", "haiku", "fable"]);
 
 export const DAEMON_DOWN_LINE = `Caveman routing is off: caveman-routerd is not answering, so requests to 127.0.0.1:${DAEMON_PORT} will fail. Restart it with \`caveman-routerd install-service\`, or undo with \`caveman-router teardown\`.`;
 
@@ -51,8 +54,21 @@ export async function userPromptSubmit(evt: Evt): Promise<void> {
   });
 }
 
-/** True when the daemon answered — its answer stands, even "leave it". False
- * sends the caller to the hosted fallback. */
+const LOCAL_BASE_URL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i;
+
+/** Claude Code talks to the local daemon (setup's base URL, in the hook's
+ * environment or in user settings): then the daemon alone routes, even when
+ * it is down. */
+function pointedAtDaemon(): boolean {
+  if (LOCAL_BASE_URL.test(process.env.ANTHROPIC_BASE_URL ?? "")) return true;
+  const base = (readSettings(settingsPath(false))?.env as Record<string, unknown> | undefined)?.ANTHROPIC_BASE_URL;
+  return typeof base === "string" && LOCAL_BASE_URL.test(base);
+}
+
+/** False only when no daemon is listening and Claude Code is not pointed at
+ * one: that is the one case for the hosted fallback. A daemon that is there
+ * but slow or failing owns the spawn, which is then left alone, so a spawn is
+ * never routed twice. */
 export async function spawnViaDaemon(evt: Evt, input: Record<string, unknown>, parentModel: string, modelDeclared: boolean): Promise<boolean> {
   const decision = await spawnDecision(HARNESS, session(evt), {
     tool: "Agent",
@@ -62,12 +78,20 @@ export async function spawnViaDaemon(evt: Evt, input: Record<string, unknown>, p
     parent: parentModel ? { model: parentModel } : {},
     ...(text(evt.cwd) ? { cwd: evt.cwd } : {}),
   });
-  if (!decision) return false;
-  const next = decision.model ? agentAlias(decision.model) : "";
-  const current = typeof input.model === "string" ? input.model.trim().toLowerCase() : "";
+  if (decision === "absent") return pointedAtDaemon();
+  if (!decision) return true;
   const out: Record<string, unknown> = {};
-  if (next && next !== current) {
-    out.hookSpecificOutput = { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...input, model: next } };
+  const current = typeof input.model === "string" ? input.model.trim().toLowerCase() : "";
+  if (decision.model?.trim().toLowerCase() === "inherit") {
+    if ("model" in input) {
+      const { model: _dropped, ...inherited } = input;
+      out.hookSpecificOutput = { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: inherited };
+    }
+  } else {
+    const next = decision.model ? agentAlias(decision.model) : "";
+    if (next && next !== current) {
+      out.hookSpecificOutput = { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...input, model: next } };
+    }
   }
   if (decision.line) out.systemMessage = decision.line;
   if (Object.keys(out).length > 0) process.stdout.write(JSON.stringify(out));
@@ -117,7 +141,8 @@ export async function statuslineChain(stdin: string, previous: string | undefine
   const code = await new Promise<number>((resolve) => {
     const child = spawn(previous, { shell: true, stdio: ["pipe", "inherit", "inherit"] });
     child.on("error", () => resolve(0));
-    child.on("close", (status) => resolve(status ?? 0));
+    // Killed by a signal: a failure (128 + signal number, as a shell reports it).
+    child.on("close", (status, signal) => resolve(status ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : 0)));
     child.stdin.on("error", () => { /* a command that ignores stdin closes it early */ });
     child.stdin.end(stdin);
   });

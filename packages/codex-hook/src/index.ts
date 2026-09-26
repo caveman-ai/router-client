@@ -1,13 +1,13 @@
 import { DAEMON_PORT, daemonHealthy, postEvent, postPrompt, spawnDecision } from "@caveman-ai/router-client";
 
-// Codex CLI hooks for caveman-routerd (config: ~/.codex/hooks.json, written by
-// `caveman-router setup`). One command for every event; Codex tells us which on
-// stdin as `hook_event_name`. Every failure path exits 0 with nothing on
-// stdout, which Codex reads as "carry on unchanged".
+// Codex CLI hooks for caveman-routerd, registered in the `caveman` profile
+// (~/.codex/caveman.config.toml, written by `caveman-router setup`), so they
+// only load for `codex --profile caveman`. One command for every event; Codex
+// says which on stdin as `hook_event_name`. Every failure path exits 0 with
+// nothing on stdout, which Codex reads as "carry on unchanged".
 //
-// Only sessions on the `caveman` profile (model "auto") are touched: the hooks
-// file is user-wide, and steering a child of a session that does not go
-// through the daemon would name a model that session's catalog lacks.
+// Sessions not on model "auto" are still left alone, as a second guard: a
+// child steered outside the daemon's catalog would name a model Codex lacks.
 
 const HARNESS = "codex";
 const PROMPT_EXCERPT_CHARS = 500;
@@ -37,7 +37,7 @@ async function preToolUse(evt: Evt, session: string): Promise<void> {
     parent: { model: evt.model },
     ...(text(evt.cwd) ? { cwd: evt.cwd } : {}),
   });
-  if (!decision) return;
+  if (!decision || decision === "absent") return;
   const updated: Record<string, unknown> = { ...input };
   if (decision.model && decision.model !== input.model) updated.model = decision.model;
   if (decision.effort && EFFORT_RE.test(decision.effort) && decision.effort !== input.reasoning_effort) updated.reasoning_effort = decision.effort;
