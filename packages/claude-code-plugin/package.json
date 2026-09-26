@@ -1,0 +1,14 @@
+{
+  "name": "@caveman-ai/router-claude-code-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code plugin layout for the caveman-routerd hooks (marketplace distribution).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "devDependencies": {
+    "@caveman-ai/router-setup": "workspace:^"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

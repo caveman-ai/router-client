@@ -1,0 +1,324 @@
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { daemonHome } from "@caveman-ai/router-client";
+
+// Every file setup edits goes through here: a timestamped backup before each
+// change, an atomic write, and a record of what setup wrote. Teardown uses the
+// record: a file nobody touched since setup gets its original bytes back; a
+// file someone edited since gets only setup's own keys taken out.
+
+export type FileRecord = {
+  /** Did the file exist before setup first touched it? */
+  existed: boolean;
+  /** The pre-setup copy, or null once the file was edited outside setup. */
+  backup: string | null;
+  /** sha256 of what setup last wrote. */
+  written: string;
+  /** The file's mode before setup first touched it (restored with its bytes). */
+  mode?: number;
+  /** JSON keys setup set (path key → value) and what they were before. */
+  set?: Record<string, unknown>;
+  prior?: Record<string, unknown>;
+  /** Anything else a writer must remember (the prior statusline, hooks …). */
+  extra?: Record<string, unknown>;
+};
+
+export type SetupState = { version: 1; files: Record<string, FileRecord>; keys?: string[] };
+
+export const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+export function statePath(): string {
+  return join(daemonHome(), "router-setup.json");
+}
+
+export function loadState(): SetupState {
+  try {
+    const parsed = JSON.parse(readFileSync(statePath(), "utf8")) as SetupState;
+    if (parsed && parsed.version === 1 && parsed.files && typeof parsed.files === "object") return parsed;
+  } catch { /* first run */ }
+  return { version: 1, files: {} };
+}
+
+export function saveState(state: SetupState): void {
+  atomicWrite(statePath(), JSON.stringify(state, null, 2) + "\n", { secret: true });
+}
+
+/** undefined when the file does not exist; any other read error throws, so a
+ * file we cannot read is never overwritten. */
+export function readText(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** The file a write lands in: a symlinked config (a dotfiles repo) is written
+ * through its link, which stays a link. A dangling link is refused. */
+function writeTarget(path: string): string {
+  let link = false;
+  try { link = lstatSync(path).isSymbolicLink(); } catch { return path; }
+  if (!link) return path;
+  try { return realpathSync(path); } catch { throw new Error(`${path} is a symlink to a missing file; not touching it`); }
+}
+
+/** Temp file + rename, with a unique temp name (concurrent writers never
+ * share one). The file keeps its mode; a new file is 0600. `secret` (the
+ * text carries the local token) also drops group/other access, from the temp
+ * file's creation on. */
+function atomicWrite(path: string, text: string, options: { mode?: number; secret?: boolean } = {}): void {
+  const target = writeTarget(path);
+  mkdirSync(dirname(target), { recursive: true });
+  let keep = options.mode ?? 0o600;
+  try { keep = statSync(target).mode & 0o777; } catch { /* new file */ }
+  if (options.secret) keep &= 0o700;
+  const temp = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  writeFileSync(temp, text, { mode: keep, flag: "wx" });
+  try {
+    chmodSync(temp, keep); // the umask may have narrowed it
+    renameSync(temp, target);
+  } catch (error) {
+    try { unlinkSync(temp); } catch { /* already gone */ }
+    throw error;
+  }
+}
+
+const stamp = (): string => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+
+/** Backups may hold the token: created 0600 (never a wider moment), then filled. */
+function backup(path: string): string {
+  let target = `${path}.caveman-backup-${stamp()}`;
+  for (let n = 1; existsSync(target); n++) target = `${path}.caveman-backup-${stamp()}-${n}`;
+  const fd = openSync(target, "wx", 0o600);
+  try { writeSync(fd, readFileSync(path)); } finally { closeSync(fd); }
+  return target;
+}
+
+/** Readable by group or others. */
+export function looseMode(path: string): boolean {
+  try { return (statSync(path).mode & 0o077) !== 0; } catch { return false; }
+}
+
+// ------------------------------------------------------------------ the lock
+
+const LOCK_WAIT_MS = 30_000;
+// A lock younger than this is held even if its pid is missing or dead: its
+// owner may still be between creating it and writing to it.
+const LOCK_FRESH_MS = 5_000;
+
+function lockHeld(lock: string): boolean {
+  let age: number;
+  try { age = Date.now() - statSync(lock).mtimeMs; } catch { return false; }
+  if (age < LOCK_FRESH_MS) return true;
+  const pid = Number(readText(lock)?.trim() || NaN);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** Atomic create: the pid goes into a temp file first, then link() puts it in
+ * place, which fails if a lock exists. The lock is never seen empty. */
+function tryLock(lock: string): boolean {
+  const temp = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
+  writeFileSync(temp, String(process.pid), { mode: 0o600, flag: "wx" });
+  try {
+    linkSync(temp, lock);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    unlinkSync(temp);
+  }
+}
+
+/** Takes a stale lock out of the way atomically: rename it aside, then check
+ * the file we got really is stale; a live one (taken meanwhile) goes back. */
+function clearStale(lock: string): void {
+  const aside = `${lock}.stale.${process.pid}.${randomBytes(4).toString("hex")}`;
+  try { renameSync(lock, aside); } catch { return; }
+  if (lockHeld(aside)) { try { linkSync(aside, lock); } catch { /* another lock is there now */ } }
+  try { unlinkSync(aside); } catch { /* gone */ }
+}
+
+/** One setup or teardown at a time. A second run waits for the lock; a lock
+ * whose process is gone (and is older than 5 s) is taken over. */
+export async function withSetupLock<T>(fn: () => Promise<T>): Promise<T> {
+  const lock = join(daemonHome(), "router-setup.lock");
+  mkdirSync(daemonHome(), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (!tryLock(lock)) {
+    if (!lockHeld(lock)) { clearStale(lock); continue; }
+    if (Date.now() > deadline) throw new Error(`another caveman-router setup or teardown holds ${lock}; try again when it finishes`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  try {
+    return await fn();
+  } finally {
+    try { unlinkSync(lock); } catch { /* removed by hand */ }
+  }
+}
+
+/** The record for `path`, created on first touch. A file edited outside setup
+ * since setup last wrote it loses its verbatim restore: its backup predates
+ * edits that restoring it would throw away. */
+export function recordFor(state: SetupState, path: string): FileRecord {
+  const current = readText(path);
+  let record = state.files[path];
+  if (!record) {
+    record = { existed: current !== undefined, backup: null, written: "" };
+    if (current !== undefined) record.mode = statSync(path).mode & 0o777;
+    state.files[path] = record;
+  } else if (current !== undefined && sha(current) !== record.written) {
+    record.backup = null;
+  }
+  return record;
+}
+
+/** Writes `next` if it differs from what is on disk; false when it was
+ * already there (an idempotent re-run writes and backs up nothing). */
+export function writeManaged(state: SetupState, path: string, next: string, secret = false): boolean {
+  const record = recordFor(state, path);
+  const current = readText(path);
+  if (current === next) {
+    record.written = sha(next);
+    if (secret && looseMode(path)) chmodSync(writeTarget(path), statSync(path).mode & 0o700);
+    return false;
+  }
+  if (current !== undefined) {
+    const copy = backup(path);
+    // Only the first backup is the pre-setup original.
+    if (record.written === "" && record.existed) record.backup = copy;
+  }
+  atomicWrite(path, next, { secret });
+  record.written = sha(next);
+  return true;
+}
+
+export type Restored = "restored" | "removed" | "edited" | "missing" | "unmanaged";
+
+/** Undoes setup for one file. `surgical` takes the current text and returns
+ * it without setup's changes (null: leave it as it is; false: the file is
+ * wholly setup's, delete it). */
+export function restoreManaged(state: SetupState, path: string, surgical: (current: string, record: FileRecord) => string | null | false): Restored {
+  const record = state.files[path];
+  if (!record) return "unmanaged";
+  const current = readText(path);
+  delete state.files[path];
+  if (current === undefined) return "missing";
+  if (sha(current) === record.written) {
+    if (!record.existed) { unlinkSync(path); return "removed"; }
+    if (record.backup && existsSync(record.backup)) {
+      atomicWrite(path, readFileSync(record.backup, "utf8"));
+      if (record.mode !== undefined) chmodSync(writeTarget(path), record.mode);
+      return "restored";
+    }
+  }
+  const next = surgical(current, record);
+  if (next === false) { unlinkSync(path); return "removed"; }
+  if (next === null || next === current) return "edited";
+  backup(path);
+  atomicWrite(path, next);
+  return "edited";
+}
+
+// ------------------------------------------------------------ JSON key edits
+
+export const ABSENT = { $absent: true };
+const isAbsent = (value: unknown): boolean => !!value && typeof value === "object" && (value as { $absent?: unknown }).$absent === true;
+
+export type Json = Record<string, unknown>;
+const splitKey = (key: string): string[] => key.split(".");
+
+function getPath(root: Json, path: string[]): unknown {
+  let node: unknown = root;
+  for (const part of path) {
+    if (!node || typeof node !== "object" || Array.isArray(node) || !(part in (node as Json))) return ABSENT;
+    node = (node as Json)[part];
+  }
+  return node;
+}
+
+function setPath(root: Json, path: string[], value: unknown): void {
+  let node = root;
+  for (const part of path.slice(0, -1)) {
+    const next = node[part];
+    if (!next || typeof next !== "object" || Array.isArray(next)) node[part] = {};
+    node = node[part] as Json;
+  }
+  if (isAbsent(value)) delete node[path[path.length - 1]!];
+  else node[path[path.length - 1]!] = value;
+  // An object setup emptied (env: {}) goes with its last key.
+  for (let depth = path.length - 1; depth > 0; depth--) {
+    const parent = getPath(root, path.slice(0, depth));
+    if (parent && typeof parent === "object" && !isAbsent(parent) && Object.keys(parent as Json).length === 0) {
+      setPath(root, path.slice(0, depth), ABSENT);
+    } else break;
+  }
+}
+
+export const equal = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/** Sets exactly `desired` (dotted keys; the parts must not contain dots) and
+ * remembers each key's pre-setup value: the first one seen, or the user's own
+ * if they changed the key since setup set it. Keys an earlier run set that
+ * this run does not want are put back. */
+export function applyKeys(root: Json, record: FileRecord, desired: Record<string, unknown>): void {
+  record.set ??= {};
+  record.prior ??= {};
+  for (const key of Object.keys(record.set)) {
+    if (key in desired) continue;
+    if (equal(getPath(root, splitKey(key)), record.set[key])) setPath(root, splitKey(key), record.prior[key] ?? ABSENT);
+    delete record.set[key];
+    delete record.prior[key];
+  }
+  for (const [key, value] of Object.entries(desired)) {
+    const current = getPath(root, splitKey(key));
+    // First touch, or the user changed it since setup: theirs is what
+    // teardown gives back.
+    if (!(key in record.prior) || !equal(current, record.set[key])) record.prior[key] = current;
+    setPath(root, splitKey(key), value);
+    record.set[key] = value;
+  }
+}
+
+/** Puts back every key setup set that still holds setup's value; a key the
+ * user changed since stays as the user left it. */
+export function restoreKeys(root: Json, record: FileRecord): void {
+  for (const [key, value] of Object.entries(record.set ?? {})) {
+    if (equal(getPath(root, splitKey(key)), value)) setPath(root, splitKey(key), record.prior?.[key] ?? ABSENT);
+  }
+}
+
+/** The value the user means for `key`: what they had before setup, or what
+ * they put there since. */
+export function userValue(root: Json, record: FileRecord, key: string): unknown {
+  const current = getPath(root, splitKey(key));
+  const changed = !!record.set && key in record.set && !equal(current, record.set[key]);
+  const value = !changed && record.prior && key in record.prior ? record.prior[key] : current;
+  return isAbsent(value) ? undefined : value;
+}
+
+export function currentValue(root: Json, key: string): unknown {
+  const value = getPath(root, splitKey(key));
+  return isAbsent(value) ? undefined : value;
+}
+
+/** Parses a JSON object file; undefined for a file that is not one (setup then
+ * refuses to touch it rather than overwrite somebody's config). */
+export function parseJsonObject(text: string | undefined): Json | undefined {
+  if (text === undefined || !text.trim()) return {};
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Json) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Serialises with the file's own indentation. */
+export function formatJson(root: Json, original: string | undefined): string {
+  const indent = original ? /^([ \t]+)"/m.exec(original)?.[1] ?? "  " : "  ";
+  return JSON.stringify(root, null, indent) + "\n";
+}
