@@ -5,6 +5,9 @@ import { RouterClient } from "@caveman-ai/router-client";
 import type { DelegateChildUsage, DelegateParent, DelegateResponse, RepoProfile } from "@caveman-ai/router-client";
 import { readSpawnState, recordLatency, routerKey, routerOn, routerURL, withOffSwitch, writeSpawnState } from "./config.js";
 import { PROFILE_BUDGET_MS, repoProfile } from "./repo-profile.js";
+import { postToolUse, sessionStart, spawnViaDaemon, stopEvent, userPromptSubmit } from "./daemon-hooks.js";
+
+export { statuslineChain } from "./daemon-hooks.js";
 
 // The spawn actuator. On Claude Code's PreToolUse for an Agent/Task spawn it
 // asks the router whether the child should run on a cheaper model and rewrites
@@ -235,6 +238,9 @@ async function decide(evt: Record<string, any>): Promise<void> {
     ? evt.tool_input : {}) as Record<string, unknown>;
   const text = transcriptText(evt.transcript_path, SPAWN_TAIL_BYTES);
   const parent = parentFromTranscript(text);
+  // The local daemon, when it answers, owns the spawn; the hosted call below is
+  // the fallback for a machine without one.
+  if (await spawnViaDaemon(evt, input, parent?.model ?? "")) return;
   // No key, no call: do not spend a git walk on an answer that cannot come.
   if (!parent || !routerKey()) return;
   const repo = await sessionRepo(text, evt.cwd);
@@ -391,7 +397,9 @@ function readStdin(): Promise<Buffer> {
 }
 
 /** The whole actuator behind one command, because Claude Code addresses a hook
- * by command: PreToolUse decides, SubagentStop reports. Everything runs inside
+ * by command: PreToolUse decides (the local daemon first, the hosted router as
+ * the fallback), SubagentStop reports, and SessionStart, UserPromptSubmit,
+ * PostToolUse and Stop feed caveman-routerd. Everything runs inside
  * the one try, first statement included: a hook that exits non-zero is a hook
  * that broke somebody's spawn. */
 export async function spawnHook(): Promise<void> {
@@ -400,7 +408,13 @@ export async function spawnHook(): Promise<void> {
     if (!routerOn()) return;
     const evt = JSON.parse((await readStdin()).toString("utf8") || "{}") as Record<string, any>;
     if (!evt || typeof evt !== "object") return;
-    if (evt.hook_event_name === "SubagentStop") await report(evt);
-    else await decide(evt);
+    switch (evt.hook_event_name) {
+      case "SessionStart": await sessionStart(evt); break;
+      case "UserPromptSubmit": await userPromptSubmit(evt); break;
+      case "PostToolUse": await postToolUse(evt); break;
+      case "Stop": await stopEvent(evt); break;
+      case "SubagentStop": await report(evt); break;
+      default: await decide(evt);
+    }
   } catch { /* fail-open: the spawn runs as proposed */ }
 }
