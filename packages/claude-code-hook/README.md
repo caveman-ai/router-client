@@ -111,9 +111,13 @@ model needs (context tokens, cache reads, turn, children already running), asks
 
 The request also carries a `repo` profile — committed file count, byte total,
 top languages, test-file count, distinct files and directories edited in the
-session; counts and names only. It comes from `git ls-tree -r -l HEAD`, is
-cached per working directory and commit, and is dropped if git is missing, not
-a repository, or slower than 300 ms. `models` is sent only when
+session; counts and names only. It comes from `git ls-tree -r -l HEAD`
+(without `-l`, so without bytes, in a partial clone; git runs with lazy
+fetching, prompts and optional locks off, in its own process group that is
+killed at the deadline), is cached per working directory and commit, and is
+dropped if git is missing or not a repository. A tree walk that does not finish
+in 300 ms is cached as a large repository (`files: 1000000`, a sentinel) for
+that commit. `models` is sent only when
 `ROUTER_AGENT_POOL` is set.
 
 When the router also advises a different model for the parent session, the line

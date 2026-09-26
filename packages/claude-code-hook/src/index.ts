@@ -149,11 +149,11 @@ export function touchedFromTranscript(text: string): { touched_files: number; to
 
 /** The git profile plus the tail's edit counts; zero edits add nothing, and
  * nothing at all means no `repo` field. */
-function sessionRepo(text: string, cwd: unknown): RepoProfile | undefined {
+async function sessionRepo(text: string, cwd: unknown): Promise<RepoProfile | undefined> {
   const budget = Math.min(PROFILE_BUDGET_MS, remainingMS() - SPAWN_MIN_CALL_MS);
   const touched = touchedFromTranscript(text);
   const repo: RepoProfile = {
-    ...(budget > 0 ? repoProfile(cwd, budget) : undefined),
+    ...(budget > 0 ? await repoProfile(cwd, budget) : undefined),
     ...(touched.touched_files > 0 ? touched : {}),
   };
   return Object.keys(repo).length > 0 ? repo : undefined;
@@ -237,7 +237,7 @@ async function decide(evt: Record<string, any>): Promise<void> {
   const parent = parentFromTranscript(text);
   // No key, no call: do not spend a git walk on an answer that cannot come.
   if (!parent || !routerKey()) return;
-  const repo = sessionRepo(text, evt.cwd);
+  const repo = await sessionRepo(text, evt.cwd);
   const models = agentPool();
   const agent = typeof input.subagent_type === "string" ? input.subagent_type : "";
   const proposed = proposedModel(typeof input.model === "string" ? input.model : "", parent.model);

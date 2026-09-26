@@ -45,31 +45,31 @@ function repo() {
   return { dir, git };
 }
 
-test("the profile is cached per HEAD and recomputed after a commit", () => {
+test("the profile is cached per HEAD and recomputed after a commit", async () => {
   const home = mkdtempSync(join(tmpdir(), "router-home-"));
   process.env.CAVEMAN_ROUTER_HOME = home;
   const { dir, git } = repo();
   // A generous budget: this asserts caching, not speed.
-  assert.deepEqual(repoProfile(dir, 300), { files: 1, bytes: 10, languages: ["go"], test_files: 0 });
+  assert.deepEqual(await repoProfile(dir, 300), { files: 1, bytes: 10, languages: ["go"], test_files: 0 });
 
   // Poison the cache: the same HEAD must be served from it, not re-walked.
   const [file] = readdirSync(join(home, "spawn")).filter((name) => name.startsWith("repo-"));
   const path = join(home, "spawn", file);
   const cached = JSON.parse(readFileSync(path, "utf8"));
   writeFileSync(path, JSON.stringify({ ...cached, profile: { files: 99 } }));
-  assert.deepEqual(repoProfile(dir, 300), { files: 99 });
+  assert.deepEqual(await repoProfile(dir, 300), { files: 99 });
 
   writeFileSync(join(dir, "a_test.go"), "package a\n");
   git("add", ".");
   git("commit", "-q", "-m", "two");
-  assert.deepEqual(repoProfile(dir, 300), { files: 2, bytes: 20, languages: ["go"], test_files: 1 });
+  assert.deepEqual(await repoProfile(dir, 300), { files: 2, bytes: 20, languages: ["go"], test_files: 1 });
 });
 
-test("not a repo, no budget, or a git that hangs: no profile, fast", () => {
+test("not a repo, no budget, or a git that hangs: no profile, fast", async () => {
   process.env.CAVEMAN_ROUTER_HOME = mkdtempSync(join(tmpdir(), "router-home-"));
-  assert.equal(repoProfile(mkdtempSync(join(tmpdir(), "router-plain-"))), undefined);
-  assert.equal(repoProfile(repo().dir, 0), undefined);
-  assert.equal(repoProfile(undefined), undefined);
+  assert.equal(await repoProfile(mkdtempSync(join(tmpdir(), "router-plain-"))), undefined);
+  assert.equal(await repoProfile(repo().dir, 0), undefined);
+  assert.equal(await repoProfile(undefined), undefined);
 
   const real = repo().dir;
   const bin = mkdtempSync(join(tmpdir(), "router-bin-"));
@@ -79,8 +79,63 @@ test("not a repo, no budget, or a git that hangs: no profile, fast", () => {
   process.env.PATH = `${bin}:${saved}`;
   try {
     const started = Date.now();
-    assert.equal(repoProfile(real), undefined);
+    assert.equal(await repoProfile(real), undefined);
     assert.ok(Date.now() - started < 1000, `gave up on the hanging git (${Date.now() - started} ms)`);
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
+test("a partial clone is counted without fetching a single blob", async () => {
+  process.env.CAVEMAN_ROUTER_HOME = mkdtempSync(join(tmpdir(), "router-home-"));
+  const { dir: source, git } = repo();
+  writeFileSync(join(source, "b.go"), "package a\n\nfunc B() {}\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "two");
+  git("config", "uploadpack.allowFilter", "true");
+  const clone = join(mkdtempSync(join(tmpdir(), "router-partial-")), "clone");
+  execFileSync("git", ["clone", "-q", "--no-checkout", "--filter=blob:none", `file://${source}`, clone], { stdio: "ignore" });
+  const blob = execFileSync("git", ["rev-parse", "HEAD:b.go"], { cwd: clone, encoding: "utf8" }).trim();
+  const missing = () => {
+    try {
+      execFileSync("git", ["cat-file", "-e", blob], { cwd: clone, stdio: "ignore", env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } });
+      return false;
+    } catch { return true; }
+  };
+  assert.ok(missing(), "the clone starts without the blob");
+  assert.deepEqual(await repoProfile(clone, 300), { files: 2, languages: ["go"], test_files: 0 });
+  assert.ok(missing(), "profiling lazily fetched a blob");
+});
+
+test("a walk that runs out of time is cached as large, and a grandchild cannot hold it open", async () => {
+  const home = mkdtempSync(join(tmpdir(), "router-home-"));
+  process.env.CAVEMAN_ROUTER_HOME = home;
+  const dir = mkdtempSync(join(tmpdir(), "router-big-"));
+  const bin = mkdtempSync(join(tmpdir(), "router-bin-"));
+  // ls-tree leaves a background grandchild holding stdout and exits: only a
+  // process-group kill ends the walk before the grandchild does.
+  writeFileSync(join(bin, "git"), `#!/bin/sh
+echo "$GIT_NO_LAZY_FETCH$GIT_TERMINAL_PROMPT$GIT_OPTIONAL_LOCKS" > "${bin}/env"
+case "$3" in
+  rev-parse) echo 1111111111111111111111111111111111111111 ;;
+  config) exit 1 ;;
+  ls-tree) sleep 5 & exit 0 ;;
+esac
+`);
+  chmodSync(join(bin, "git"), 0o755);
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}:${saved}`;
+  try {
+    const started = Date.now();
+    assert.deepEqual(await repoProfile(dir, 300), { files: 1_000_000 });
+    assert.ok(Date.now() - started < 1000, `walk held open (${Date.now() - started} ms)`);
+    assert.equal(readFileSync(join(bin, "env"), "utf8").trim(), "100");
+    const [file] = readdirSync(join(home, "spawn")).filter((name) => name.startsWith("repo-"));
+    assert.deepEqual(JSON.parse(readFileSync(join(home, "spawn", file), "utf8")).profile, { files: 1_000_000 });
+    // Served from the cache: no second 300 ms walk for the same HEAD.
+    const again = Date.now();
+    assert.deepEqual(await repoProfile(dir, 300), { files: 1_000_000 });
+    assert.ok(Date.now() - again < 200, `re-walked (${Date.now() - again} ms)`);
   } finally {
     process.env.PATH = saved;
   }

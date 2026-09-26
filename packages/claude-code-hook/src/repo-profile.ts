@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
@@ -8,7 +8,8 @@ import { routerHome } from "./config.js";
 // The shape of the repository the session works in: file count, byte total,
 // languages by file count, test files. Counts and names only — no path and no
 // content leaves the machine. Read off the committed tree (`git ls-tree -l`
-// carries sizes), cached per (cwd, HEAD) so a commit costs one walk.
+// carries sizes; a partial clone gets no sizes), cached per (cwd, HEAD) so a
+// commit costs one walk.
 
 export const PROFILE_BUDGET_MS = 300;
 const MAX_LANGUAGES = 8;
@@ -49,10 +50,54 @@ export function profileFromLsTree(out: string): RepoProfile {
   return { files, bytes, languages, test_files: testFiles };
 }
 
-function git(cwd: string, args: string[], timeout: number): string {
-  // fsmonitor off: a hook must never start a repository's configured daemon.
-  return execFileSync("git", ["-c", "core.fsmonitor=false", ...args], {
-    cwd, timeout, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024,
+// Every git call runs with lazy fetching off (a partial clone would otherwise
+// download every missing blob `ls-tree -l` asks the size of), no credential
+// prompt, and no optional index lock.
+const GIT_ENV = { GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+const GIT_MAX_OUTPUT = 64 * 1024 * 1024;
+
+/** A walk that ran out of time: the tree is big enough that one git call does
+ * not finish inside the budget. */
+class GitTimeout extends Error {}
+
+/** git in its own process group. At the deadline the WHOLE group is killed and
+ * the promise settles at once, so a grandchild (a fetch helper, a credential
+ * helper) cannot hold the pipe past the budget. */
+function git(cwd: string, args: string[], timeout: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!(timeout > 0)) return reject(new GitTimeout());
+    let child: ChildProcess;
+    try {
+      // fsmonitor off: a hook must never start a repository's configured daemon.
+      child = spawn("git", ["-c", "core.fsmonitor=false", ...args], {
+        cwd, detached: true, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, ...GIT_ENV },
+      });
+    } catch (error) {
+      return reject(error);
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (error: Error | undefined, out = "") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+        child.stdout?.destroy();
+        reject(error);
+      } else {
+        resolve(out);
+      }
+    };
+    const timer = setTimeout(() => finish(new GitTimeout()), timeout);
+    child.stdout!.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > GIT_MAX_OUTPUT) finish(new Error("git output too large"));
+      else chunks.push(chunk);
+    });
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => finish(code === 0 ? undefined : new Error(`git exited ${code}`), Buffer.concat(chunks).toString("utf8")));
   });
 }
 
@@ -60,30 +105,54 @@ function cachePath(cwd: string): string {
   return join(routerHome(), "spawn", `repo-${createHash("sha256").update(cwd).digest("hex").slice(0, 16)}.json`);
 }
 
+// The profile cached for a walk that did not finish in the budget. A tree that
+// big is a large repository; caching it as large (the router buckets 2000+
+// files as `large`) saves every later spawn the timeout and keeps it out of the
+// permissive `unknown` bucket. It is a sentinel, not a count.
+export const TIMED_OUT_PROFILE: RepoProfile = { files: 1_000_000 };
+
 /** The profile for `cwd`, or undefined when it is not a git repository, git is
  * slow or missing, or anything else fails. Never throws. */
-export function repoProfile(cwd: unknown, budgetMs = PROFILE_BUDGET_MS): RepoProfile | undefined {
+export async function repoProfile(cwd: unknown, budgetMs = PROFILE_BUDGET_MS): Promise<RepoProfile | undefined> {
   const budget = Math.min(budgetMs, PROFILE_BUDGET_MS);
-  // execFileSync reads a timeout of 0 as "no timeout".
   if (typeof cwd !== "string" || !cwd || !(budget > 0)) return undefined;
   const started = Date.now();
   const left = () => budget - (Date.now() - started);
   try {
-    const head = git(cwd, ["rev-parse", "HEAD"], left()).trim();
+    const head = (await git(cwd, ["rev-parse", "HEAD"], left())).trim();
     if (!/^[0-9a-f]{40,64}$/.test(head)) return undefined;
     const path = cachePath(cwd);
     try {
       const cached = JSON.parse(readFileSync(path, "utf8")) as { cwd?: unknown; head?: unknown; profile?: RepoProfile };
       if (cached.cwd === cwd && cached.head === head && cached.profile) return cached.profile;
     } catch { /* no cache for this cwd yet */ }
-    const remaining = left();
-    if (remaining <= 0) return undefined;
-    const profile = profileFromLsTree(git(cwd, ["ls-tree", "-r", "-l", "-z", "--full-tree", head], remaining));
+    const save = (profile: RepoProfile) => {
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, JSON.stringify({ cwd, head, profile }));
+      } catch { /* an unwritable home costs a re-walk next spawn */ }
+      return profile;
+    };
+    // A partial clone has no local blobs to size: count files, skip the bytes.
+    // Older git marks one with extensions.partialClone, newer with
+    // remote.<name>.promisor = true.
+    const partial = (await git(cwd, ["config", "--get-regexp", "^(extensions\\.partialclone|remote\\..*\\.promisor)$"], left()).catch((error) => {
+      if (error instanceof GitTimeout) throw error;
+      return ""; // exit 1: neither is set
+    })).split("\n").some((line) => /^extensions\.partialclone \S/i.test(line) || /\.promisor true$/i.test(line.trim()));
+    const walkBudget = left();
+    let out: string;
     try {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, JSON.stringify({ cwd, head, profile }));
-    } catch { /* an unwritable home costs a re-walk next spawn */ }
-    return profile;
+      out = await git(cwd, ["ls-tree", "-r", ...(partial ? [] : ["-l"]), "-z", "--full-tree", head], walkBudget);
+    } catch (error) {
+      // Only a walk that had most of the budget and still ran out says the
+      // tree is large; a walk squeezed by a late start says nothing.
+      if (error instanceof GitTimeout && walkBudget >= PROFILE_BUDGET_MS / 2) return save(TIMED_OUT_PROFILE);
+      return undefined;
+    }
+    const profile = profileFromLsTree(out);
+    if (partial) delete profile.bytes;
+    return save(profile);
   } catch {
     return undefined;
   }
