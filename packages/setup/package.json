@@ -1,0 +1,47 @@
+{
+  "name": "@caveman-ai/router-setup",
+  "version": "0.1.0",
+  "description": "caveman-router setup: route Claude Code, Codex and OpenCode through caveman-routerd, the local Caveman routing daemon, in one command.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "caveman-router": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@caveman-ai/router-claude-code": "workspace:^",
+    "@caveman-ai/router-client": "workspace:^",
+    "@caveman-ai/router-codex": "workspace:^"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caveman-ai/router-client.git",
+    "directory": "packages/setup"
+  },
+  "homepage": "https://github.com/caveman-ai/router-client#readme",
+  "bugs": {
+    "url": "https://github.com/caveman-ai/router-client/issues"
+  },
+  "author": "Caveman"
+}

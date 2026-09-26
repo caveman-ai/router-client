@@ -21,6 +21,12 @@ importers:
         specifier: workspace:^
         version: link:../client
 
+  packages/claude-code-plugin:
+    devDependencies:
+      '@caveman-ai/router-setup':
+        specifier: workspace:^
+        version: link:../setup
+
   packages/client: {}
 
   packages/codex-hook:
@@ -28,6 +34,18 @@ importers:
       '@caveman-ai/router-client':
         specifier: workspace:^
         version: link:../client
+
+  packages/setup:
+    dependencies:
+      '@caveman-ai/router-claude-code':
+        specifier: workspace:^
+        version: link:../claude-code-hook
+      '@caveman-ai/router-client':
+        specifier: workspace:^
+        version: link:../client
+      '@caveman-ai/router-codex':
+        specifier: workspace:^
+        version: link:../codex-hook
 
 packages:
 
