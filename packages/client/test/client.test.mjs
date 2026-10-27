@@ -111,3 +111,50 @@ test("an unreachable router is a network reason", async () => {
   assert.equal(result.ok, false);
   assert.match(result.reason, /network|timeout/);
 });
+
+for (const status of [301, 302, 303, 307, 308]) {
+  for (const method of ["route", "task", "delegate", "outcome", "delegateOutcome"]) {
+    test(`${method} never follows a ${status} redirect with router credentials`, async () => {
+      const destination = await fakeRouter(ok);
+      const router = await fakeRouter((_req, res) => {
+        res.writeHead(status, { location: `${destination.url}/capture` });
+        res.end();
+      });
+      try {
+        const client = new RouterClient({ url: router.url, apiKey: "fixture-key", sessionId: "fixture-session", userHash: "fixture-user" });
+        const calls = {
+          route: () => client.route({ text: "fixture-prompt", models: ["fixture-model"] }),
+          task: () => client.task({ ask: "fixture-prompt", parent: { model: "fixture-model" } }),
+          delegate: () => client.delegate({ parent: { model: "fixture-model", context_tokens: 1 }, task: { prompt: "fixture-prompt" } }),
+          outcome: () => client.outcome("fixture-token", "completed"),
+          delegateOutcome: () => client.delegateOutcome("fixture-decision", {
+            model: "fixture-model", input_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0,
+            output_tokens: 1, turns: 1, tool_calls: 0, result_chars: 1,
+          }),
+        };
+        const result = await calls[method]();
+        assert.equal(destination.seen.length, 0, "redirect destination received router request");
+        assert.deepEqual(result, { ok: false, reason: "network" });
+        assert.equal(router.seen.length, 1);
+        assert.equal(router.seen[0].headers["x-cave-api-key"], "fixture-key");
+      } finally {
+        router.close();
+        destination.close();
+      }
+    });
+  }
+}
+
+test("same-origin redirects also fail without replaying the request", async () => {
+  const router = await fakeRouter((_req, res, n) => {
+    if (n === 1) { res.writeHead(307, { location: "/capture" }); res.end(); return; }
+    ok(_req, res);
+  });
+  try {
+    const client = new RouterClient({ url: router.url, apiKey: "fixture-key" });
+    assert.deepEqual(await client.route({ text: "fixture-prompt", models: ["fixture-model"] }), { ok: false, reason: "network" });
+    assert.equal(router.seen.length, 1);
+  } finally {
+    router.close();
+  }
+});

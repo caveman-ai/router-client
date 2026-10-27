@@ -94,6 +94,8 @@ export class RouterClient {
     try {
       const response = await fetch(`${this.url}${path}`, {
         method: "POST",
+        // Router credentials and prompts must never follow a redirect.
+        redirect: "error",
         headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeout),
