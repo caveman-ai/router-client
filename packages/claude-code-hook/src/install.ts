@@ -30,10 +30,14 @@ export function readSettings(path: string): Record<string, unknown> | undefined 
   }
 }
 
+function isOurHook(hook: unknown): boolean {
+  const value = hook as { type?: unknown; command?: unknown } | null;
+  return value?.type === "command" && value.command === HOOK_COMMAND;
+}
+
 function isOurs(entry: unknown): boolean {
   const hooks = (entry as { hooks?: unknown })?.hooks;
-  return Array.isArray(hooks) && hooks.some((h) => typeof (h as { command?: unknown })?.command === "string"
-    && (h as { command: string }).command.includes(HOOK_COMMAND));
+  return Array.isArray(hooks) && hooks.some(isOurHook);
 }
 
 export function writeSettings(path: string, root: Record<string, unknown>): void {
@@ -74,8 +78,14 @@ export function uninstallHooks(path: string): boolean {
   for (const { event } of ENTRIES) {
     if (!Array.isArray(hooks[event])) continue;
     const list = hooks[event] as unknown[];
-    const kept = list.filter((entry) => !isOurs(entry));
-    if (kept.length !== list.length) removed = true;
+    if (!list.some(isOurs)) continue;
+    const kept = list.flatMap((entry) => {
+      if (!isOurs(entry)) return [entry];
+      removed = true;
+      const ownedEntry = entry as { hooks: unknown[] };
+      const remaining = ownedEntry.hooks.filter((hook) => !isOurHook(hook));
+      return remaining.length ? [{ ...ownedEntry, hooks: remaining }] : [];
+    });
     if (kept.length === 0) delete hooks[event];
     else hooks[event] = kept;
   }
