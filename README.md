@@ -11,7 +11,11 @@ packages only call it.
 - [`@caveman-ai/router-client`](packages/client) — the API client.
 - [`@caveman-ai/router-claude-code`](packages/claude-code-hook) — the Claude Code hook.
 
-## 60-second install (Claude Code)
+## Install (Claude Code)
+
+Neither package is published to npm yet. The install below is how it will
+work once they are; until then, build from source (see
+[CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ```bash
 npm i -g @caveman-ai/router-claude-code
@@ -22,7 +26,7 @@ caveman-router-hook install
 That writes two entries into `~/.claude/settings.json`: a `PreToolUse` hook
 scoped to `Agent|Task`, and a `SubagentStop` hook. Nothing else changes. Start a
 Claude Code session and spawn a subagent; when the router moves it to a cheaper
-model you get one line:
+model you get one line, for example (the figures here are illustrative):
 
 ```
 Caveman · subagent on Sonnet 5 instead of Opus 5 · est. $0.84 vs $1.72 · code search
@@ -61,7 +65,7 @@ Mistral, Qwen and anything else OpenRouter serves.
 from openai import OpenAI
 client = OpenAI(base_url="https://router.caveman.so/v1", api_key="crk_...")
 r = client.chat.completions.create(
-    model="auto:openai/gpt-5.6,anthropic/claude-sonnet-4.5,google/gemini-3.7-flash",
+    model="auto:openai/gpt-5.6,anthropic/claude-sonnet-5,google/gemini-3.7-flash",
     messages=[{"role": "user", "content": "…"}],
     extra_headers={"x-upstream-key": "sk-or-..."},   # your own OpenRouter key
 )

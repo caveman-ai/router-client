@@ -3,6 +3,9 @@
 Client for the Caveman Router decision API. ESM, types included, zero runtime
 dependencies, Node ≥ 20 (uses the global `fetch`).
 
+Not yet published to npm. Until it is, build from source (see
+[CONTRIBUTING.md](../../CONTRIBUTING.md)).
+
 ```bash
 npm i @caveman-ai/router-client
 ```

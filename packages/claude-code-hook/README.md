@@ -1,5 +1,8 @@
 # @caveman-ai/router-claude-code
 
+Not yet published to npm. Until it is, build from source (see
+[CONTRIBUTING.md](../../CONTRIBUTING.md)).
+
 ## Claude Code on your Claude subscription
 
 ```bash
@@ -20,7 +23,7 @@ cost you nothing beyond the plan you already pay for. Only non-Claude models —
 and only if you put them in your pool — cost money, through your own upstream
 key. `caveman-router-hook model <name>` switches to a fixed model
 (`google/gemini-3.7-flash`, `openrouter/deepseek/deepseek-v4-pro-0813`,
-`anthropic/claude-sonnet-4.5`) or a shortlist (`auto:<a>,<b>`). The statusline
+`anthropic/claude-sonnet-5`) or a shortlist (`auto:<a>,<b>`). The statusline
 shows which model actually answered:
 
 ```
@@ -100,7 +103,8 @@ caveman-router-hook install
 
 **PreToolUse.** Reads the tail of the parent transcript for the numbers the cost
 model needs (context tokens, cache reads, turn, children already running), asks
-`POST /v1/route/delegate`, and on a `delegate` answer emits
+`POST /v1/route/delegate`, and on a `delegate` answer emits, for example
+(illustrative figures):
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"…":"…","model":"sonnet"}},"systemMessage":"Caveman · subagent on Sonnet 5 instead of Opus 5 · est. $0.84 vs $1.72 · code search"}
