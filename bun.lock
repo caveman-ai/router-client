@@ -1,0 +1,38 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "caveman-router-client-workspace",
+      "devDependencies": {
+        "@types/node": "^22.10.2",
+        "typescript": "^5.7.2",
+      },
+    },
+    "packages/claude-code-hook": {
+      "name": "@caveman-ai/router-claude-code",
+      "version": "0.1.0",
+      "bin": {
+        "caveman-router-hook": "./dist/cli.js",
+      },
+      "dependencies": {
+        "@caveman-ai/router-client": "workspace:^",
+      },
+    },
+    "packages/client": {
+      "name": "@caveman-ai/router-client",
+      "version": "0.1.0",
+    },
+  },
+  "packages": {
+    "@caveman-ai/router-claude-code": ["@caveman-ai/router-claude-code@workspace:packages/claude-code-hook"],
+
+    "@caveman-ai/router-client": ["@caveman-ai/router-client@workspace:packages/client"],
+
+    "@types/node": ["@types/node@22.20.4", "", { "dependencies": { "undici-types": "6.21.0" } }, "sha512-zJRE40jpHtKqE/C4fgHrAKQLJuSpzEnP9ff9Y7YtoR3Wd2pwqzlekDeEuUQXjRd+QCYnVnNwuJYmhdk9XV8gvA=="],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
+  }
+}

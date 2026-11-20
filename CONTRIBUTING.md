@@ -1,12 +1,12 @@
 # Contributing
 
 ```bash
-pnpm install
-pnpm -r build
-pnpm -r test
+bun install
+bun run build
+bun run test
 ```
 
-Node 20 or newer, pnpm 10. No runtime dependencies in either package — that is a hard
+Node 20 or newer, Bun 1.4.5. No runtime dependencies in either package — that is a hard
 rule, not a preference: the hook runs on every subagent spawn and must start in
 milliseconds. Dev dependencies are `typescript` and `@types/node`.
 
