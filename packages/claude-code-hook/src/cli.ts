@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { configPath, latencyP95, routerKey, routerOn, routerURL, writeConfig } from "./config.js";
 import { hooksInstalled, installHooks, settingsPath, uninstallHooks } from "./install.js";
-import { DEFAULT_MODEL, HEADER_NAME, STATUSLINE_COMMAND, configuredModel, setModel, setupClaudeCode, setupMode, statuslineHook, teardownClaudeCode, validModel } from "./claude-code.js";
+import { DEFAULT_MODEL, HEADER_NAME, MODE_HEADER, STATUSLINE_COMMAND, configuredModel, setModel, setupClaudeCode, setupMode, statuslineHook, teardownClaudeCode, validModel } from "./claude-code.js";
 import { spawnHook } from "./index.js";
 
 // No subcommand means Claude Code invoked us as the hook itself: the hook is
@@ -88,6 +88,7 @@ switch (sub) {
     if (apiKey) console.log(`  env.ANTHROPIC_AUTH_TOKEN ${keyState}`);
     else console.log(`  env.ANTHROPIC_CUSTOM_HEADERS ${HEADER_NAME}: ${keyState}`);
     console.log(`  model                    ${model}`);
+    if (model === "auto" || model.startsWith("auto:")) console.log(`  env.ANTHROPIC_CUSTOM_HEADERS ${MODE_HEADER}`);
     if (result.statuslineTaken) {
       console.log("  statusLine               kept yours; chain ours into it:");
       console.log(`    ${STATUSLINE_COMMAND}`);

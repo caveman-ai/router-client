@@ -1,9 +1,10 @@
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { RouterClient } from "@caveman-ai/router-client";
-import type { DelegateChildUsage, DelegateParent, DelegateResponse } from "@caveman-ai/router-client";
+import type { DelegateChildUsage, DelegateParent, DelegateResponse, RepoProfile } from "@caveman-ai/router-client";
 import { readSpawnState, recordLatency, routerKey, routerOn, routerURL, withOffSwitch, writeSpawnState } from "./config.js";
+import { PROFILE_BUDGET_MS, repoProfile } from "./repo-profile.js";
 
 // The spawn actuator. On Claude Code's PreToolUse for an Agent/Task spawn it
 // asks the router whether the child should run on a cheaper model and rewrites
@@ -128,6 +129,52 @@ export function parentFromTranscript(text: string): DelegateParent | undefined {
   };
 }
 
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
+/** How many distinct files, and directories, the session edited in the tail.
+ * Counts only: the paths themselves never leave the hook. */
+export function touchedFromTranscript(text: string): { touched_files: number; touched_dirs: number } {
+  const files = new Set<string>();
+  for (const entry of entries(text)) {
+    if (entry?.type !== "assistant") continue;
+    const content = Array.isArray(entry.message?.content) ? entry.message.content : [];
+    for (const block of content) {
+      if (block?.type !== "tool_use" || !EDIT_TOOLS.has(block.name)) continue;
+      const path = block.input?.file_path ?? block.input?.notebook_path;
+      if (typeof path === "string" && path) files.add(path);
+    }
+  }
+  return { touched_files: files.size, touched_dirs: new Set([...files].map((path) => dirname(path))).size };
+}
+
+/** The git profile plus the tail's edit counts; zero edits add nothing, and
+ * nothing at all means no `repo` field. */
+async function sessionRepo(text: string, cwd: unknown): Promise<RepoProfile | undefined> {
+  const budget = Math.min(PROFILE_BUDGET_MS, remainingMS() - SPAWN_MIN_CALL_MS);
+  const touched = touchedFromTranscript(text);
+  const repo: RepoProfile = {
+    ...(budget > 0 ? await repoProfile(cwd, budget) : undefined),
+    ...(touched.touched_files > 0 ? touched : {}),
+  };
+  return Object.keys(repo).length > 0 ? repo : undefined;
+}
+
+/** `ROUTER_AGENT_POOL=opus,sonnet` narrows the families the router's child
+ * policy picks from; unset, it picks from haiku, sonnet and opus. */
+function agentPool(): string[] | undefined {
+  const pool = (process.env.ROUTER_AGENT_POOL ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+  return pool.length > 0 ? pool : undefined;
+}
+
+/** The router's advice for the PARENT, as a clause on the developer line. It is
+ * never applied: Claude Code cannot switch the running session's model. */
+export function orchestratorClause(orchestrator: unknown, parentModel: string): string {
+  const advice = orchestrator as { model?: unknown; reason?: unknown } | undefined;
+  if (!advice || typeof advice.model !== "string" || !advice.model || advice.reason === "parent_kept") return "";
+  const name = claudeChildModel(advice.model).split("/").pop()!;
+  return name === claudeChildModel(parentModel) ? "" : `orchestrator: ${name} recommended`;
+}
+
 // A model the developer wrote into `.claude/agents/<type>.md` frontmatter is a
 // declaration, and the endpoint is told so rather than the hook deciding what
 // to do about it.
@@ -186,8 +233,12 @@ async function decide(evt: Record<string, any>): Promise<void> {
   if (evt.tool_name !== "Agent" && evt.tool_name !== "Task") return;
   const input = (evt.tool_input && typeof evt.tool_input === "object" && !Array.isArray(evt.tool_input)
     ? evt.tool_input : {}) as Record<string, unknown>;
-  const parent = parentFromTranscript(transcriptText(evt.transcript_path, SPAWN_TAIL_BYTES));
-  if (!parent) return;
+  const text = transcriptText(evt.transcript_path, SPAWN_TAIL_BYTES);
+  const parent = parentFromTranscript(text);
+  // No key, no call: do not spend a git walk on an answer that cannot come.
+  if (!parent || !routerKey()) return;
+  const repo = await sessionRepo(text, evt.cwd);
+  const models = agentPool();
   const agent = typeof input.subagent_type === "string" ? input.subagent_type : "";
   const proposed = proposedModel(typeof input.model === "string" ? input.model : "", parent.model);
   const veto = (process.env.ROUTER_VETO ?? "") === "1";
@@ -210,6 +261,8 @@ async function decide(evt: Record<string, any>): Promise<void> {
       background: input.run_in_background === true,
     },
     harness: { kind: "claude-code" },
+    ...(repo ? { repo } : {}),
+    ...(models ? { models } : {}),
     // The endpoint only reports inline_recommended unless the caller says it
     // can act on it; the hook owns the deny.
     veto,
@@ -217,7 +270,10 @@ async function decide(evt: Record<string, any>): Promise<void> {
   recordLatency(Date.now() - started);
   if (!result.ok) return;
   const reply = result.data as Partial<DelegateResponse>;
-  const line = typeof reply.line === "string" ? reply.line.trim() : "";
+  const clause = orchestratorClause(reply.orchestrator, parent.model);
+  const said = typeof reply.line === "string" ? reply.line.trim() : "";
+  // The clause rides a line and never makes one: a spawn left alone stays silent.
+  const line = said && clause ? `${said} · ${clause}` : said;
   const delegate = (reply.delegate && typeof reply.delegate === "object" && !Array.isArray(reply.delegate)
     ? reply.delegate : {}) as Record<string, unknown>;
   const picked = typeof delegate.model === "string" ? delegate.model : "";

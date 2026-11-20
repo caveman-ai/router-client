@@ -28,14 +28,20 @@ function ourStatusLine(value: unknown): boolean {
 }
 
 export const HEADER_NAME = "x-cave-api-key";
+/** `auto` routes the main loop as an agent turn. Static: Claude Code reads
+ * ANTHROPIC_CUSTOM_HEADERS once at start, so no per-request header fits here. */
+export const MODE_HEADER = "x-cave-routing-mode: agent";
+
+const headerLines = (value: unknown): string[] =>
+  String(typeof value === "string" ? value : "").split("\n").map((line) => line.trim()).filter(Boolean);
+const isKeyHeader = (line: string): boolean => line.toLowerCase().startsWith(`${HEADER_NAME}:`);
+const isModeHeader = (line: string): boolean => line.toLowerCase() === MODE_HEADER;
 
 /** Claude Code's `ANTHROPIC_CUSTOM_HEADERS` is newline-separated `Name: value`
- * lines. Ours is one line; anyone else's lines survive untouched. */
+ * lines. Ours are the key line and the exact mode line; anyone else's lines —
+ * a routing mode of their own included — survive untouched. */
 function withoutOurHeader(value: unknown): string[] {
-  return String(typeof value === "string" ? value : "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line && !line.toLowerCase().startsWith(`${HEADER_NAME}:`));
+  return headerLines(value).filter((line) => !isKeyHeader(line) && !isModeHeader(line));
 }
 
 export type SetupOptions = { url: string; key: string; model: string; statusline: boolean; apiKey: boolean };
@@ -53,16 +59,25 @@ export function setupClaudeCode(path: string, options: SetupOptions): SetupResul
   next.ANTHROPIC_BASE_URL = options.url;
 
   let conflict: string | undefined;
+  // --api-key leaves a key line it finds (it only ever adds the token); the
+  // subscription path re-appends it so a second setup is a no-op.
+  const lines = headerLines(next.ANTHROPIC_CUSTOM_HEADERS).filter((line) => !isModeHeader(line) && (options.apiKey || !isKeyHeader(line)));
   if (options.apiKey) {
     if (next.ANTHROPIC_AUTH_TOKEN !== options.key) changed.push("env.ANTHROPIC_AUTH_TOKEN");
     next.ANTHROPIC_AUTH_TOKEN = options.key;
   } else {
-    const headers = [...withoutOurHeader(next.ANTHROPIC_CUSTOM_HEADERS), `${HEADER_NAME}: ${options.key}`].join("\n");
-    if (next.ANTHROPIC_CUSTOM_HEADERS !== headers) changed.push("env.ANTHROPIC_CUSTOM_HEADERS");
-    next.ANTHROPIC_CUSTOM_HEADERS = headers;
+    lines.push(`${HEADER_NAME}: ${options.key}`);
     conflict = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
       .find((name) => (typeof next[name] === "string" && next[name]) || process.env[name]);
   }
+  // Both paths route the main loop when the model is auto; a fixed model is
+  // not routed, and a routing-mode line of the user's own wins.
+  const routed = options.model === "auto" || options.model.startsWith("auto:");
+  if (routed && !lines.some((line) => line.toLowerCase().startsWith("x-cave-routing-mode:"))) lines.push(MODE_HEADER);
+  const headers = lines.join("\n");
+  if ((next.ANTHROPIC_CUSTOM_HEADERS ?? "") !== headers) changed.push("env.ANTHROPIC_CUSTOM_HEADERS");
+  if (headers) next.ANTHROPIC_CUSTOM_HEADERS = headers;
+  else delete next.ANTHROPIC_CUSTOM_HEADERS;
   root.env = next;
   if (root.model !== options.model) changed.push("model");
   root.model = options.model;
