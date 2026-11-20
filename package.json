@@ -1,13 +1,16 @@
 {
   "name": "caveman-router-client-workspace",
   "private": true,
-  "packageManager": "pnpm@10.18.0",
+  "packageManager": "bun@1.4.5",
   "scripts": {
-    "build": "pnpm -r build",
-    "test": "pnpm -r test"
+    "build": "bun run --workspaces build",
+    "test": "bun run --workspaces test"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }
