@@ -13,15 +13,18 @@ packages only call it.
 
 ## Install (Claude Code)
 
-Neither package is published to npm yet. The install below is how it will
-work once they are; until then, build from source (see
-[CONTRIBUTING.md](CONTRIBUTING.md)).
+`@caveman-ai/router-claude-code` is published on npm (managed alongside the
+unified router SDK `@caveman-ai/sdk/router` in
+[caveman-ai/cloud-sdk](https://github.com/caveman-ai/cloud-sdk)):
 
 ```bash
 npm i -g @caveman-ai/router-claude-code
 caveman-router-hook login --key <your router key>
 caveman-router-hook install
 ```
+
+To build from source in this standalone repository, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 That writes two entries into `~/.claude/settings.json`: a `PreToolUse` hook
 scoped to `Agent|Task`, and a `SubagentStop` hook. Nothing else changes. Start a
